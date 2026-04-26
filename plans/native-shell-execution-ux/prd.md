@@ -118,14 +118,16 @@ Shift the *default* user-facing contract from “tool generates a report about a
 
 ### Key Design Decisions
 
-| Decision | Context | Options considered | Rationale | Trade-offs |
-|----------|---------|--------------------|-----------|------------|
-| Default = terminal-connected I/O in direct TTY | Users expect colors and pagers | Always capture; always inherit | Inherit in the common case so output matches a normal run | Sandboxed modes still differ; must document |
-| One clean pre-exec line (optional) | Users want orientation without JSON noise | No feedback; or multi-line banner | Stakeholder chose: allow a **single** clean line before child output in default mode | Wording and exact format left to implementation |
-| Opt-in verbose/structured | Power users and CI need full proposal | Verbose by default; JSON only in logs | Reduces noise for the majority | Users must learn one flag for detail |
-| Exit code = child | Scripts chain `clai` with `&&` / `\|\|` | Always 0 on success of `clai` itself; map only in `--json` | Matches shell mental model | **No** legacy opt-out; migration note only (stakeholder decision) |
-| Defer in-shell `eval` / plugins | True interactive shell state cannot be set by a child | Build plugins now; document only | Scope control; **no** first-party shell snippets in repo in Phase 1 | Full “parent shell” parity delayed |
-| Non-direct = capture-first | Docker/bwrap cannot fully mirror host TTY | Stream-forward to host TTY in v1 | Stakeholder accepted capture-first with clearer attribution (FR-6) | “Native” feel in sandboxes lags direct mode |
+
+| Decision                                       | Context                                               | Options considered                                         | Rationale                                                                            | Trade-offs                                                        |
+| ---------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| Default = terminal-connected I/O in direct TTY | Users expect colors and pagers                        | Always capture; always inherit                             | Inherit in the common case so output matches a normal run                            | Sandboxed modes still differ; must document                       |
+| One clean pre-exec line (optional)             | Users want orientation without JSON noise             | No feedback; or multi-line banner                          | Stakeholder chose: allow a **single** clean line before child output in default mode | Wording and exact format left to implementation                   |
+| Opt-in verbose/structured                      | Power users and CI need full proposal                 | Verbose by default; JSON only in logs                      | Reduces noise for the majority                                                       | Users must learn one flag for detail                              |
+| Exit code = child                              | Scripts chain `clai` with `&&` / `||`                 | Always 0 on success of `clai` itself; map only in `--json` | Matches shell mental model                                                           | **No** legacy opt-out; migration note only (stakeholder decision) |
+| Defer in-shell `eval` / plugins                | True interactive shell state cannot be set by a child | Build plugins now; document only                           | Scope control; **no** first-party shell snippets in repo in Phase 1                  | Full “parent shell” parity delayed                                |
+| Non-direct = capture-first                     | Docker/bwrap cannot fully mirror host TTY             | Stream-forward to host TTY in v1                           | Stakeholder accepted capture-first with clearer attribution (FR-6)                   | “Native” feel in sandboxes lags direct mode                       |
+
 
 ### Architecture Overview
 
@@ -150,12 +152,14 @@ Shift the *default* user-facing contract from “tool generates a report about a
 
 ## 5. Alternatives Considered
 
-| Alternative | Pros | Cons | Verdict |
-|-------------|------|------|--------|
-| Only improve labels (`stdout:`) without changing streams | Simple | Does not fix TTY or “detached” feel | Rejected: insufficient for SC-2 |
-| Always capture and pretty-print in `clai` | Uniform across modes | Worse TTY behavior; perpetuates “report” framing | Rejected for default path |
-| Primary interface = shell `eval` in parent | True shell parity | High risk, hard to policy-wrap, fragile | Rejected as default; optional docs later |
-| Send proposal to editor/clipboard only | Very safe | Extra steps; not “auto execute” | Complementary, not a replacement |
+
+| Alternative                                              | Pros                 | Cons                                             | Verdict                                  |
+| -------------------------------------------------------- | -------------------- | ------------------------------------------------ | ---------------------------------------- |
+| Only improve labels (`stdout:`) without changing streams | Simple               | Does not fix TTY or “detached” feel              | Rejected: insufficient for SC-2          |
+| Always capture and pretty-print in `clai`                | Uniform across modes | Worse TTY behavior; perpetuates “report” framing | Rejected for default path                |
+| Primary interface = shell `eval` in parent               | True shell parity    | High risk, hard to policy-wrap, fragile          | Rejected as default; optional docs later |
+| Send proposal to editor/clipboard only                   | Very safe            | Extra steps; not “auto execute”                  | Complementary, not a replacement         |
+
 
 ## 6. Implementation Plan
 
@@ -201,13 +205,15 @@ Shift the *default* user-facing contract from “tool generates a report about a
 
 ## 8. Risks and Mitigations
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|------------|--------|------------|
-| Script users depend on old stdout layout or clai’s exit 0 on child failure | Med | Med | Document migration; **no** compatibility flag; breaking change by policy |
-| TTY inheritance breaks capture-based timeout or size limits | Med | Med | Retain non-default capture mode; document limits; tests for long-running child |
-| Binary or noisy output to terminal from malicious proposal | Low | Med | Policy remains gate; consider warnings in verbose path only |
-| Platform differences in signal and exit code mapping | Med | Low | Document behavior; test Linux and macOS in CI where possible |
-| Scope creep into full shell plugins | Med | Med | Non-goals and phased plan; split follow-up PRD |
+
+| Risk                                                                       | Likelihood | Impact | Mitigation                                                                     |
+| -------------------------------------------------------------------------- | ---------- | ------ | ------------------------------------------------------------------------------ |
+| Script users depend on old stdout layout or clai’s exit 0 on child failure | Med        | Med    | Document migration; **no** compatibility flag; breaking change by policy       |
+| TTY inheritance breaks capture-based timeout or size limits                | Med        | Med    | Retain non-default capture mode; document limits; tests for long-running child |
+| Binary or noisy output to terminal from malicious proposal                 | Low        | Med    | Policy remains gate; consider warnings in verbose path only                    |
+| Platform differences in signal and exit code mapping                       | Med        | Low    | Document behavior; test Linux and macOS in CI where possible                   |
+| Scope creep into full shell plugins                                        | Med        | Med    | Non-goals and phased plan; split follow-up PRD                                 |
+
 
 ## 9. Open Questions
 
@@ -215,14 +221,17 @@ Shift the *default* user-facing contract from “tool generates a report about a
 
 ### Resolved decisions
 
-| # | Topic | Decision |
-|---|--------|----------|
-| 1 | Default feedback line | The default path **may** print **one clean line** of feedback (for example, what will run) so users get orientation without full JSON. Exact phrasing and when to suppress (e.g. non-interactive) remain implementation details. |
-| 2 | Legacy exit / output flag | **No.** No `CLAI_LEGACY_*` env, long-opt, or config to preserve pre-change exit codes or capture-only output. **Migration note only** for script authors. |
-| 3 | First-party shell snippets in repo | **No** example `zsh`/`fish`/`nu` paste-in blocks in Phase 1 documentation. Optional in a **later** phase or follow-up PRD. |
-| 4 | Pseudo-TTY in CI (Phase 1) | **No.** Rely on non-TTY integration tests in CI; SC-2 (true TTY behavior) by **documented manual** check. Optional CI pty may be a **later** phase. |
-| 5 | Non-direct (Docker / bwrap) | **Ok** as specified: **capture-first** in Phase 1 with clearer attribution (FR-6). Host-TTY stream forwarding is **not** required in Phase 1; may be revisited later. |
+
+| #   | Topic                              | Decision                                                                                                                                                                                                                         |
+| --- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Default feedback line              | The default path **may** print **one clean line** of feedback (for example, what will run) so users get orientation without full JSON. Exact phrasing and when to suppress (e.g. non-interactive) remain implementation details. |
+| 2   | Legacy exit / output flag          | **No.** No `CLAI_LEGACY_`* env, long-opt, or config to preserve pre-change exit codes or capture-only output. **Migration note only** for script authors.                                                                        |
+| 3   | First-party shell snippets in repo | **No** example `zsh`/`fish`/`nu` paste-in blocks in Phase 1 documentation. Optional in a **later** phase or follow-up PRD.                                                                                                       |
+| 4   | Pseudo-TTY in CI (Phase 1)         | **No.** Rely on non-TTY integration tests in CI; SC-2 (true TTY behavior) by **documented manual** check. Optional CI pty may be a **later** phase.                                                                              |
+| 5   | Non-direct (Docker / bwrap)        | **Ok** as specified: **capture-first** in Phase 1 with clearer attribution (FR-6). Host-TTY stream forwarding is **not** required in Phase 1; may be revisited later.                                                            |
+
 
 ## 10. Appendix (Optional)
 
 - **Glossary:** *Direct mode* — `execution.mode` configuration that runs the program without Docker/bwrap.
+

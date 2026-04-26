@@ -1,0 +1,308 @@
+<!-- PRD: plans/native-shell-execution-ux/prd.md -->
+<!-- Generated: 2026-04-26 -->
+<!-- Last Updated: 2026-04-26 -->
+
+# Tasks: Native shell execution UX for `clai ask`
+
+> Implements the PRD’s default “run like the shell” path: terminal-connected I/O and exit codes in direct mode, minimal default scaffolding, opt-in verbose/structured output, non-TTY tests in CI, and documentation/migration notes—without weakening policy or adding Phase 1 shell plugins.
+
+## 1. Overview
+
+### Project Summary
+
+Today `clai ask` always pretty-prints the full proposal as JSON and runs the child with piped stdout/stderr, then re-labels output as `status` / `stdout` / `stderr`. The process exit code does not reflect the child’s outcome. This initiative refactors the executor and `ask` presentation so the default path inherits the user’s terminal for direct execution when appropriate, propagates the child exit code, keeps at most one clean pre-exec line, and moves structured diagnostics behind an explicit opt-in—while preserving policy, confirmation, and non-direct (Docker/bwrap) capture with clearer attribution.
+
+### Scope Reference
+
+- PRD: [plans/native-shell-execution-ux/prd.md](./prd.md)
+- **Phase 1 (MVP):** Default human mode, TTY-connected I/O (direct), exit propagation, verbose opt-in, non-TTY tests, migration note, no repo-hosted shell snippets.
+- **Phase 2:** Extra flags (force capture, suppress preview), docs tightening, expanded automated edge-case coverage.
+- **Phase 3 (optional / future):** Shell snippets, `needs_shell` story, clipboard, CI PTY—out of this task list’s committed scope (see Future Considerations).
+
+### Open questions affecting planning
+
+None. Resolved decisions are recorded in PRD Section 9.
+
+### Task Statistics
+
+| Metric        | Count |
+| ------------- | ----- |
+| Total Tasks   | 19    |
+| Completed     | 0     |
+| In Progress   | 0     |
+| Blocked       | 0     |
+| Not Started   | 19    |
+
+## 2. Phase sections
+
+## Phase 1: MVP — default shell-native direct path
+
+> Delivers human-default `ask` UX, inherited stdio for direct+TTY, child exit code propagation, opt-in verbose/structured output, non-direct attribution, automated non-TTY coverage, migration + manual TTY checklist, and no first-party shell paste-in docs.
+>
+> **Goal:** Shipping Phase 1 changes the default terminal experience and exit codes in a documented, breaking way; CI proves exit/output routing on the direct path without PTY tests.
+
+### Execution layer
+
+- [ ] **1.1 Introduce stream strategy and display-mode selection** `[P0]` `[M]`
+  - **Depends on**: None
+  - **Requirements**: FR-1, FR-2, NFR-1, NFR-3
+  - **Acceptance Criteria**:
+    - [ ] A single, testable decision function (or small module) determines when the direct path uses inherited stdio vs piped capture, using at least: `ExecutionMode::Direct`, human vs verbose output intent, and whether stdout/stderr (and stdin if applicable) should attach to the user TTY per PRD (e.g. via `std::io::IsTerminal` / project conventions).
+    - [ ] Verbose/machine-oriented or non-direct profiles always select capture where the PRD requires it.
+    - [ ] Unit tests cover mode selection matrix (direct+human+non-TTY → capture; direct+human+TTY → inherit; verbose → capture; docker/bwrap → capture) without requiring a live LLM.
+  - **Notes**: Keep policy evaluation and argv construction out of this pure “how we run / connect streams” decision. Align naming with existing `ExecutionConfig` / `ExecutionMode` in `src/config`.
+
+- [ ] **1.2 Refactor proposal execution to support inherited stdio** `[P0]` `[L]`
+  - **Depends on**: Task 1.1
+  - **Requirements**: FR-2, FR-3, FR-6, NFR-3
+  - **Acceptance Criteria**:
+    - [ ] `executor` exposes a clear API (either extended `run_proposal` or adjacent entry points) that runs the child with inherited stdin/stdout/stderr when Task 1.1 selects inherit, and with piped capture otherwise.
+    - [ ] Existing timeout behavior is preserved for both paths: a hung child is terminated and the outcome distinguishes timeout from normal exit (consistent with current `RunOutcome` semantics or a deliberate, documented evolution).
+    - [ ] Non-direct modes (`Docker`, `Bwrap`) remain capture-first; no host TTY forwarding required in Phase 1 per PRD §9.
+    - [ ] Unix direct-mode `pre_exec` / process-group behavior is preserved or intentionally updated with tests/docs if behavior changes.
+  - **Notes**: Today `run_proposal` always sets `stdin(null)`, piped stdout/stderr (`src/executor.rs`). Windows job-object / breakaway logic must remain correct for the direct inherited path.
+
+- [ ] **1.3 Map child exit status to process exit codes** `[P0]` `[M]`
+  - **Depends on**: Task 1.2
+  - **Requirements**: FR-3, US-2, SC-1, NFR-1
+  - **Acceptance Criteria**:
+    - [ ] For completed child runs (no policy block, no user abort, no pre-exec failure), `clai` exits with the child’s exit code on platforms where `ExitStatus::code()` is defined; signal-terminated cases are documented (README or module docs) per platform conventions.
+    - [ ] Timeout and kill paths produce a non-zero, documented exit code for `ask`.
+    - [ ] Unit tests cover exit-code mapping helpers where platform allows deterministic simulation.
+  - **Notes**: `main` currently exits `1` only on `Result::Err` (`src/main.rs`); `ask` will need explicit `std::process::exit` or a structured return path for child status.
+
+### CLI presentation (`ask`)
+
+- [ ] **1.4 Add explicit opt-in for verbose / structured diagnostics** `[P0]` `[M]`
+  - **Depends on**: None (can parallelize with 1.1–1.2 but must integrate before 1.5)
+  - **Requirements**: FR-1, US-3, SC-3
+  - **Acceptance Criteria**:
+    - [ ] Users can opt in (CLI flag and/or config-driven behavior per PRD FR-1) to see full proposal JSON and structured execution details similar to today’s pretty-printed proposal + `status`/`stdout`/`stderr` blocks.
+    - [ ] Default (non–opt-in) path does not dump full structured proposal before execution completes.
+    - [ ] `--print-only` semantics remain coherent: proposal only, no execution (may fold into “verbose family” or stay distinct with clear help text).
+  - **Notes**: Prefer extending existing `Ask` flags (`src/main.rs`) over proliferating overlapping flags; document the contract in `--help`.
+
+- [ ] **1.5 Default human output: minimal scaffolding + optional one-line preview** `[P0]` `[L]`
+  - **Depends on**: Tasks 1.2, 1.4
+  - **Requirements**: FR-1, US-1, SC-3, FR-5
+  - **Acceptance Criteria**:
+    - [ ] Default human mode prints at most one clean line of pre-execution feedback (e.g. what will run), optional to suppress in non-interactive contexts if implementation chooses, per PRD §9 decision #1.
+    - [ ] After execution in direct+inherited mode, child output is not framed inside a generic `stdout:` / `stderr:` tool report by default.
+    - [ ] No secrets or policy-bypass instructions in new output; follow existing redaction/omission patterns (`FR-5`).
+  - **Notes**: Replace `println!("Proposed: {}", serde_json::to_string_pretty(&proposal)?);` as default behavior in `cmd_ask`.
+
+- [ ] **1.6 Policy, confirmation, and dry-run exit semantics** `[P0]` `[M]`
+  - **Depends on**: Tasks 1.3, 1.5
+  - **Requirements**: FR-4, NFR-3, US-2
+  - **Acceptance Criteria**:
+    - [ ] Policy-blocked runs exit with failure (non-zero) and message; no claim of successful execution.
+    - [ ] User declines confirmation at prompt: non-zero exit (or documented consistent “aborted” code) and message; not indistinguishable from successful command exit `0`.
+    - [ ] Dry-run and other non-execution paths do not report a fake successful child exit code.
+  - **Notes**: Today `cmd_ask` returns `Ok(())` on abort and after printing dry-run (`src/main.rs`); reconcile with FR-4 and US-2 expectations.
+
+### Non-direct attribution
+
+- [ ] **1.7 Summarize non-direct runs with program, cwd, and profile** `[P0]` `[M]`
+  - **Depends on**: Task 1.5
+  - **Requirements**: FR-6, US-1
+  - **Acceptance Criteria**:
+    - [ ] For `Docker` and `Bwrap` profiles, user-visible output includes identifiable program, working directory, and execution profile before or alongside captured streams so output is attributable to the invoked command.
+    - [ ] Default human mode stays minimal; verbose mode may repeat or expand the same metadata for operators.
+  - **Notes**: Builds on capture-first non-direct behavior per PRD.
+
+### Testing and quality
+
+- [ ] **1.8 Unit tests: mode selection and exit/status helpers** `[P0]` `[M]`
+  - **Depends on**: Tasks 1.1, 1.3
+  - **Requirements**: US-4, NFR-1, QG-1
+  - **Acceptance Criteria**:
+    - [ ] `#[cfg(test)]` modules cover stream-strategy selection and exit-code mapping logic with deterministic inputs.
+    - [ ] `cargo test --no-default-features --locked` passes locally for new tests.
+  - **Notes**: Follow patterns in `src/policy.rs`, `src/schema.rs`, etc.
+
+- [ ] **1.9 Integration tests: direct path exit propagation (non-TTY)** `[P0]` `[L]`
+  - **Depends on**: Tasks 1.2, 1.3
+  - **Requirements**: US-4, NFR-1, FR-3, SC-1
+  - **Acceptance Criteria**:
+    - [ ] Automated tests invoke the executor (or a thin test-only harness) with trivial children (e.g. `true` / `false` / shell `exit N`) under **non-TTY** conditions and assert `clai`/`run_proposal` exit semantics match the child.
+    - [ ] At least one test covers verbose/capture path distinct from inherited path.
+    - [ ] No PTY-based assertions in CI for Phase 1 (per PRD and US-4).
+  - **Notes**: If full `clai ask` E2E is impractical without a model, prefer library-level integration tests in `tests/` calling `executor::run_proposal` with synthetic `CommandProposal` values—consistent with PRD testing levels.
+
+- [ ] **1.10 Performance guardrail: trivial child overhead** `[P1]` `[S]`
+  - **Depends on**: Task 1.2
+  - **Requirements**: NFR-2
+  - **Acceptance Criteria**:
+    - [ ] A repeatable micro-benchmark or scripted timing check (documented in README or contributor docs) compares default direct capture vs inherited path for a no-op command; overhead stays within the PRD’s ~500ms order-of-magnitude guardrail on reference hardware, or deviations are explained.
+  - **Notes**: Does not require Criterion unless maintainers prefer it; a simple `tests/` timing smoke or `cargo` example is enough if documented.
+
+### Documentation and release notes
+
+- [ ] **1.11 Migration note and SC-2 manual verification checklist** `[P0]` `[M]`
+  - **Depends on**: Tasks 1.5, 1.6, 1.7
+  - **Requirements**: NFR-4, SC-2, US-4, FR-4
+  - **Acceptance Criteria**:
+    - [ ] README and/or CHANGELOG describes breaking changes: default stdout layout and exit code behavior for script authors; **no** legacy flag/env to restore old behavior (PRD §9).
+    - [ ] Documented manual steps verify TTY behavior (color/pager representative command) on macOS and Linux for SC-2, since CI omits PTY in Phase 1.
+    - [ ] Signal / exit-status semantics briefly documented for script authors where platform-dependent.
+  - **Notes**: PRD ties migration to README or CHANGELOG.
+
+- [ ] **1.12 Confirm Phase 1 doc scope: no first-party shell snippets** `[P2]` `[S]`
+  - **Depends on**: Task 1.11
+  - **Requirements**: US-5, PRD Non-Goals (shell plugins)
+  - **Acceptance Criteria**:
+    - [ ] No new `zsh`/`fish`/`nu` paste-in example blocks or shell-plugin instructions are added to the repository in Phase 1 deliverables.
+  - **Notes**: Future work belongs in a follow-up PRD (Phase 3).
+
+### Verification
+
+- [ ] **1.13 Phase 1 verification: integration and quality gates** `[P0]` `[M]`
+  - **Depends on**: All prior tasks in Phase 1 (1.1–1.12)
+  - **Requirements**: SC-4, QG-1, QG-2, QG-3, QG-4, QG-5
+  - **Acceptance Criteria**:
+    - [ ] All Phase 1 tasks 1.1–1.12 marked complete or intentionally skipped with reason.
+    - [ ] `cargo test --no-default-features --locked` passes (QG-1).
+    - [ ] `cargo clippy --no-default-features --locked -- -D warnings` passes (QG-2).
+    - [ ] `cargo build --locked` passes (QG-3).
+    - [ ] `cargo fmt --check` passes (QG-4).
+    - [ ] Code review completed for execution and policy paths (QG-5).
+    - [ ] Manual spot-check: default `ask` flow matches US-1/US-2 in a real terminal; verbose path matches US-3.
+  - **Notes**: `cargo fmt --check` is a PRD quality gate even if not yet in `.github/workflows/ci.yml`; consider adding it to CI as part of this phase or a fast-follow.
+
+## Phase 2: Flags, docs hardening, edge-case coverage
+
+> Tightens operator documentation, adds optional capture/preview controls, and expands automated tests for edge cases called out in the PRD’s Phase 2.
+>
+> **Goal:** Phase 2 is independently shippable documentation and robustness work atop Phase 1 without changing Phase 1’s core safety posture.
+
+### Product and docs
+
+- [ ] **2.1 Documentation pass: execution modes, TTY vs capture, troubleshooting** `[P1]` `[M]`
+  - **Depends on**: Task 1.13
+  - **Requirements**: FR-6, NFR-4, SC-2
+  - **Acceptance Criteria**:
+    - [ ] User-facing docs explain when streams are inherited vs captured, how Docker/bwrap differs, and where to use verbose mode for audits.
+    - [ ] Timeout / large-output limitations from PRD risks are addressed in docs.
+  - **Notes**: Align with stakeholder table in PRD Section 4.
+
+- [ ] **2.2 Optional flag to force capture on direct runs** `[P1]` `[M]`
+  - **Depends on**: Task 1.13
+  - **Requirements**: PRD Phase 2 (example: “force capture”), FR-1
+  - **Acceptance Criteria**:
+    - [ ] Operators can force piped capture even when direct+TTY would inherit, without disabling policy.
+    - [ ] Behavior is documented in `--help` and README.
+  - **Notes**: Mitigates “TTY inheritance breaks capture-based limits” risk from PRD §8.
+
+- [ ] **2.3 Optional flag to suppress the one-line pre-execution preview** `[P1]` `[S]`
+  - **Depends on**: Task 1.13
+  - **Requirements**: PRD Phase 2, FR-1
+  - **Acceptance Criteria**:
+    - [ ] Users can disable the single-line preview for scripting or minimal output.
+    - [ ] Default remains PRD-conformant when the flag is unset.
+
+### Automated coverage
+
+- [ ] **2.4 Tests: large output, truncation, and long-running child interactions** `[P1]` `[M]`
+  - **Depends on**: Task 1.13
+  - **Requirements**: PRD Phase 2, PRD Risk (timeout / limits)
+  - **Acceptance Criteria**:
+    - [ ] Automated tests cover large stdout/stderr behavior and timeout termination for capture path (non-TTY) per existing `max_capture_bytes` / timeout semantics.
+  - **Notes**: Keep within CI runtime budgets.
+
+- [ ] **2.5 Tests: binary or noisy output handling (policy + verbose-only warnings)** `[P1]` `[M]`
+  - **Depends on**: Task 1.13
+  - **Requirements**: PRD Phase 2, PRD Risk (binary/noisy output)
+  - **Acceptance Criteria**:
+    - [ ] Tests or documented checks ensure policy still gates execution; verbose path may warn without polluting default human output.
+  - **Notes**: Scope strictly to PRD Phase 2 wording—avoid new policy product surface without review.
+
+### Verification
+
+- [ ] **2.6 Phase 2 verification: quality gates** `[P0]` `[M]`
+  - **Depends on**: Tasks 2.1–2.5
+  - **Requirements**: SC-4, QG-1–QG-4
+  - **Acceptance Criteria**:
+    - [ ] All Phase 2 tasks complete or skipped with rationale.
+    - [ ] `cargo test --no-default-features --locked` passes.
+    - [ ] `cargo clippy --no-default-features --locked -- -D warnings` passes.
+    - [ ] `cargo build --locked` passes.
+    - [ ] `cargo fmt --check` passes.
+  - **Notes**: QG-5 applies if execution paths materially change in Phase 2.
+
+## 3. Dependency graph
+
+```text
+1.1 (stream strategy)
+└── 1.2 (inherited vs capture execution)
+    ├── 1.3 (exit mapping)
+    │   └── 1.6 (policy/abort semantics) ──► 1.5 (default presentation)
+    ├── 1.9 (integration tests)
+    └── 1.10 (perf guardrail)
+
+1.4 (verbose opt-in) ──► 1.5 (default presentation)
+1.5 ──► 1.7 (non-direct attribution)
+1.3 + 1.1 ──► 1.8 (unit tests)
+
+1.5, 1.6, 1.7 ──► 1.11 (migration + SC-2 docs)
+1.11 ──► 1.12 (no shell snippets audit)
+1.1..1.12 ──► 1.13 (Phase 1 verification)
+
+1.13 ──► Phase 2 (2.1–2.6)
+```
+
+## 4. Risk mitigation tasks
+
+Risks from PRD §8 are addressed as follows (no extra standalone tasks beyond Phase coverage):
+
+| PRD risk                                                  | Mitigation tasks                          |
+| --------------------------------------------------------- | ----------------------------------------- |
+| Script users depend on old stdout / exit `0` on failure   | 1.11, 1.6                                 |
+| TTY inheritance vs timeout / size limits                  | 1.2, 2.2, 2.4                             |
+| Binary/noisy output                                       | 2.5, policy unchanged (1.x)               |
+| Platform signal / exit mapping                            | 1.3, 1.11                                 |
+| Scope creep into shell plugins                            | 1.12, Phase 3 deferred to Future Considerations |
+
+## 5. Open questions impacting tasks
+
+| PRD question | Affected tasks | Default if unresolved |
+| ------------ | -------------- | --------------------- |
+| *(none)*     | —              | PRD §9 records all resolved decisions |
+
+## 6. Requirements coverage
+
+| Requirement | Task(s)              | Status     |
+| ----------- | -------------------- | ---------- |
+| SC-1        | 1.3, 1.9, 1.13       | ✅ Covered |
+| SC-2        | 1.2, 1.11, 1.13, 2.1 | ✅ Covered |
+| SC-3        | 1.4, 1.5, 1.13       | ✅ Covered |
+| SC-4        | 1.13, 2.6            | ✅ Covered |
+| US-1        | 1.5, 1.7, 1.13       | ✅ Covered |
+| US-2        | 1.3, 1.6, 1.9        | ✅ Covered |
+| US-3        | 1.4, 1.13            | ✅ Covered |
+| US-4        | 1.8, 1.9, 1.11       | ✅ Covered |
+| US-5        | 1.12                 | ✅ Covered |
+| FR-1        | 1.1, 1.4, 1.5, 2.3   | ✅ Covered |
+| FR-2        | 1.1, 1.2, 1.11       | ✅ Covered |
+| FR-3        | 1.3, 1.9             | ✅ Covered |
+| FR-4        | 1.6, 1.11            | ✅ Covered |
+| FR-5        | 1.5                  | ✅ Covered |
+| FR-6        | 1.7, 2.1             | ✅ Covered |
+| NFR-1       | 1.1, 1.8, 1.9        | ✅ Covered |
+| NFR-2       | 1.10                 | ✅ Covered |
+| NFR-3       | 1.1, 1.2, 1.6, 2.5   | ✅ Covered |
+| NFR-4       | 1.11, 2.1            | ✅ Covered |
+| QG-1        | 1.8, 1.9, 1.13, 2.6  | ✅ Covered |
+| QG-2        | 1.13, 2.6            | ✅ Covered |
+| QG-3        | 1.13, 2.6            | ✅ Covered |
+| QG-4        | 1.13, 2.6            | ✅ Covered |
+| QG-5        | 1.13, 2.6            | ✅ Covered |
+
+## 7. Future considerations
+
+- **Phase 3 / follow-up PRD:** First-party `zsh`/`fish`/`nu` snippets, optional clipboard helpers, `needs_shell` policy story, CI pseudo-TTY tests (PRD §6 Phase 3)—explicitly out of MVP task commitments above.
+- **CI improvement:** Add `cargo fmt --check` to `.github/workflows/ci.yml` to match QG-4 automatically.
+- **Full `clai ask` E2E:** If maintainers later add fixture/model-free E2E for `ask`, extend 1.9 patterns without replacing library-level executor tests.
+
+---
+
+**Review:** If any task feels too coarse or dependencies should change (especially 1.2 executor work splitting across Unix/Windows), say what to adjust and the list can be revised incrementally per the skill’s progress rules.
