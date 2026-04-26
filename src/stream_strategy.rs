@@ -54,6 +54,8 @@ pub enum StreamStrategy {
 /// - **Non-direct** profiles ([`ExecutionMode::Docker`], [`ExecutionMode::Bwrap`]) are
 ///   always capture-first in Phase 1 (FR-6, PRD §9).
 /// - **Verbose** output intent always selects capture.
+/// - If **`force_capture`** is set for [`ExecutionMode::Direct`], returns capture so operators
+///   get size-limited piped I/O on a TTY (Phase 2) without changing policy.
 /// - **Direct** + **human** selects [`StreamStrategy::Inherit`] only when
 ///   [`UserTerminalContext::all_streams_tty`] is true; otherwise capture (e.g. CI).
 #[must_use]
@@ -61,8 +63,12 @@ pub fn select_stream_strategy(
     mode: ExecutionMode,
     output_intent: OutputIntent,
     tty: UserTerminalContext,
+    force_capture: bool,
 ) -> StreamStrategy {
     if output_intent == OutputIntent::Verbose {
+        return StreamStrategy::Capture;
+    }
+    if force_capture && mode == ExecutionMode::Direct {
         return StreamStrategy::Capture;
     }
     match mode {
@@ -105,7 +111,8 @@ mod tests {
             select_stream_strategy(
                 ExecutionMode::Direct,
                 OutputIntent::Human,
-                ctx(false, false, false)
+                ctx(false, false, false),
+                false
             ),
             StreamStrategy::Capture
         );
@@ -117,9 +124,23 @@ mod tests {
             select_stream_strategy(
                 ExecutionMode::Direct,
                 OutputIntent::Human,
-                ctx(true, true, true)
+                ctx(true, true, true),
+                false
             ),
             StreamStrategy::Inherit
+        );
+    }
+
+    #[test]
+    fn direct_human_all_tty_force_capture_overrides_inherit() {
+        assert_eq!(
+            select_stream_strategy(
+                ExecutionMode::Direct,
+                OutputIntent::Human,
+                ctx(true, true, true),
+                true
+            ),
+            StreamStrategy::Capture
         );
     }
 
@@ -129,7 +150,8 @@ mod tests {
             select_stream_strategy(
                 ExecutionMode::Direct,
                 OutputIntent::Human,
-                ctx(false, true, true)
+                ctx(false, true, true),
+                false
             ),
             StreamStrategy::Capture
         );
@@ -141,7 +163,21 @@ mod tests {
             select_stream_strategy(
                 ExecutionMode::Direct,
                 OutputIntent::Verbose,
-                ctx(true, true, true)
+                ctx(true, true, true),
+                false
+            ),
+            StreamStrategy::Capture
+        );
+    }
+
+    #[test]
+    fn force_capture_ignored_for_verbose_on_direct() {
+        assert_eq!(
+            select_stream_strategy(
+                ExecutionMode::Direct,
+                OutputIntent::Verbose,
+                ctx(true, true, true),
+                true
             ),
             StreamStrategy::Capture
         );
@@ -151,11 +187,11 @@ mod tests {
     fn docker_always_capture() {
         let tty = ctx(true, true, true);
         assert_eq!(
-            select_stream_strategy(ExecutionMode::Docker, OutputIntent::Human, tty),
+            select_stream_strategy(ExecutionMode::Docker, OutputIntent::Human, tty, true),
             StreamStrategy::Capture
         );
         assert_eq!(
-            select_stream_strategy(ExecutionMode::Docker, OutputIntent::Verbose, tty),
+            select_stream_strategy(ExecutionMode::Docker, OutputIntent::Verbose, tty, false),
             StreamStrategy::Capture
         );
     }
@@ -164,11 +200,11 @@ mod tests {
     fn bwrap_always_capture() {
         let tty = ctx(true, true, true);
         assert_eq!(
-            select_stream_strategy(ExecutionMode::Bwrap, OutputIntent::Human, tty),
+            select_stream_strategy(ExecutionMode::Bwrap, OutputIntent::Human, tty, true),
             StreamStrategy::Capture
         );
         assert_eq!(
-            select_stream_strategy(ExecutionMode::Bwrap, OutputIntent::Verbose, tty),
+            select_stream_strategy(ExecutionMode::Bwrap, OutputIntent::Verbose, tty, false),
             StreamStrategy::Capture
         );
     }

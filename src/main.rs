@@ -64,6 +64,18 @@ enum Commands {
         )]
         verbose: bool,
         #[arg(
+            long = "force-capture",
+            env = "CLAI_ASK_FORCE_CAPTURE",
+            help = "On execution.mode = direct, use piped capture even when stdin/stdout/stderr are TTYs (applies size limits; policy unchanged). Or ask_force_capture in config.toml / CLAI_ASK_FORCE_CAPTURE=1"
+        )]
+        force_capture: bool,
+        #[arg(
+            long = "no-preview",
+            env = "CLAI_ASK_NO_PREVIEW",
+            help = "Omit the one-line pre-run hint (Run: … or non-direct context) in default human mode. Or ask_no_preview in config / CLAI_ASK_NO_PREVIEW=1"
+        )]
+        no_preview: bool,
+        #[arg(
             long,
             short = 'y',
             help = "Auto-confirm policy prompts (use carefully)"
@@ -159,6 +171,8 @@ fn run(cli: Cli) -> Result<()> {
             words,
             print_only,
             verbose,
+            force_capture,
+            no_preview,
             yes,
             cloud,
         } => cmd_ask(
@@ -167,6 +181,8 @@ fn run(cli: Cli) -> Result<()> {
             words.join(" "),
             print_only,
             verbose,
+            force_capture,
+            no_preview,
             yes,
             cloud,
         ),
@@ -256,12 +272,15 @@ fn cmd_doctor(config_path: Option<PathBuf>, model_override: Option<PathBuf>) -> 
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_ask(
     config_path: Option<PathBuf>,
     model_override: Option<PathBuf>,
     prompt: String,
     print_only: bool,
     verbose: bool,
+    force_capture: bool,
+    no_preview: bool,
     yes: bool,
     use_cloud: bool,
 ) -> Result<()> {
@@ -311,6 +330,8 @@ fn cmd_ask(
     }
 
     let verbose_ask = verbose || cfg.ask_verbose;
+    let force_capture = force_capture || cfg.ask_force_capture;
+    let no_preview = no_preview || cfg.ask_no_preview;
     if verbose_ask {
         println!("Proposed: {}", serde_json::to_string_pretty(&proposal)?);
     }
@@ -355,12 +376,13 @@ fn cmd_ask(
         cfg.execution.mode,
         output_intent,
         current_user_terminal_context(),
+        force_capture,
     );
     let is_non_direct = matches!(
         cfg.execution.mode,
         ExecutionMode::Docker | ExecutionMode::Bwrap
     );
-    if !verbose_ask && io::stdout().is_terminal() {
+    if !verbose_ask && !no_preview && io::stdout().is_terminal() {
         if let Some(line) = non_direct_context_one_line(&proposal, &cfg.execution)? {
             println!("{line}");
         } else {
@@ -382,11 +404,14 @@ fn cmd_ask(
             "status: {:?}\nstdout:\n{}\nstderr:\n{}",
             out.status, out.stdout, out.stderr
         );
+        if out.stdout.contains('\u{FFFD}') || out.stderr.contains('\u{FFFD}') {
+            eprintln!("note: captured output included non-UTF-8 bytes (shown as U+FFFD).");
+        }
     } else {
         match stream {
             StreamStrategy::Inherit => {}
             StreamStrategy::Capture => {
-                if is_non_direct && !io::stdout().is_terminal() {
+                if is_non_direct && !no_preview && !io::stdout().is_terminal() {
                     if let Some(line) = non_direct_context_one_line(&proposal, &cfg.execution)? {
                         println!("{line}");
                     }

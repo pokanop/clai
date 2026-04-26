@@ -66,6 +66,13 @@ pub struct AppConfig {
     /// overridden on the command line. CLI `--verbose` / `CLAI_ASK_VERBOSE` also enables this.
     #[serde(default)]
     pub ask_verbose: bool,
+    /// When true, `clai ask` uses piped capture in direct mode even on a TTY (see `--force-capture`).
+    #[serde(default)]
+    pub ask_force_capture: bool,
+    /// When true, do not print the one-line pre-run preview (`Run:` or non-direct context) for human
+    /// default output (see `--no-preview`).
+    #[serde(default)]
+    pub ask_no_preview: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -129,6 +136,8 @@ impl Default for AppConfig {
             },
             cloud: CloudConfig::default(),
             ask_verbose: false,
+            ask_force_capture: false,
+            ask_no_preview: false,
         }
     }
 }

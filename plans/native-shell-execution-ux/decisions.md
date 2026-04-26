@@ -74,7 +74,20 @@
 - **QG-5** — code review for execution and policy paths completed.
 - **Manual** — default `ask` and verbose path spot-checked in a real terminal per README *Manual verification: TTY*; aligns with US-1, US-2, US-3.
 
+## 2026-04-26 — Task 2.1: README execution / streams / limits (FR-6, NFR-4, SC-2)
+
+- **Placement:** New subsection after *Execution wrappers*, before *clai ask exit codes*, so migration and exit-code sections stay in logical order.
+- **Numeric limits:** Documented the same values `cmd_ask` passes today: `Duration::from_secs(120)` and `256 * 1024` bytes per stream on the capture path (`src/main.rs`), with inherit path noted as unbounded for volume but still subject to the 120s timeout.
+- **“Stakeholder table” (tasks 2.1 note):** PRD §4 is the *Key Design Decisions* table; README prose aligns with that (default TTY connect, one-line preview, verbose opt-in, non-direct capture-first, no legacy switch).
+
+## 2026-04-26 — Phase 2 (tasks 2.2–2.6) complete
+
+- **2.2 `--force-capture`**: `select_stream_strategy` takes `force_capture: bool` after TTY context; `true` on `ExecutionMode::Direct` returns `StreamStrategy::Capture` before the usual direct+all-TTY inherit branch. Config mirror `ask_force_capture`; env `CLAI_ASK_FORCE_CAPTURE`. No policy/argv changes.
+- **2.3 `--no-preview`**: Skips the human one-line pre-run block and the post-run non-TTY `non_direct_context_one_line` repeat. Config `ask_no_preview` / `CLAI_ASK_NO_PREVIEW`.
+- **2.4 `tests/phase2_edge_cases.rs`**: Truncation test uses total child output below the typical ~64 KiB pipe buffer so the child can exit; documents deadlock risk for huge output before a single `read`. Timeout test mirrors executor timeout semantics in the integration crate.
+- **2.5 Non-UTF-8**: `cmd_ask` verbose branch `eprintln!`s when U+FFFD appears in captured strings; default human unchanged. Policy integration test + README policy/binary bullets; no new `PolicyEngine` rules.
+- **2.6 QG**: `cargo clippy` with and without `--all-targets` both green; `fmt`, `test`, `build` as in PRD.
+
 ## Future opportunities (not implemented)
 
-- Phase 2 “force capture” flag will layer on top of this by forcing `StreamStrategy::Capture` regardless of TTY.
 - A slimmer TTY rule (e.g. stdout+stderr only) is possible if product wants inheritance when stdin is a pipe; document any change in this file when implementing.

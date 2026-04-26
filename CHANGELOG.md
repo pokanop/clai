@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added (Phase 2)
+
+- **`clai ask --force-capture`:** In `execution.mode = direct`, force piped capture (size limits) even on a TTY, without changing policy. Config: `ask_force_capture` or `CLAI_ASK_FORCE_CAPTURE=1`.
+- **`clai ask --no-preview`:** Omit the one-line pre-run `Run:` / non-direct context line (and the non-TTY docker/bwrap attribution line) in default human mode. Config: `ask_no_preview` or `CLAI_ASK_NO_PREVIEW=1`.
+- **Verbose + non-UTF-8 capture:** A one-line `stderr` note when verbose output includes replacement characters from lossy decode.
+- **Tests:** `tests/phase2_edge_cases.rs` (truncation, timeout, lossy output, policy block integration).
+
 ### Breaking: `clai ask` (default UX and process exit)
 
 These changes align default `ask` with “run the proposed command; show its result and exit like the shell” (see README migration section). **There is no** compatibility flag, environment variable, or config key to restore the previous default **stdout shape** or **process exit** behavior (PRD §9).
