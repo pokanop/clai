@@ -23,7 +23,9 @@ pub enum AppError {
     #[error("model registry major version {got} unsupported; upgrade clai")]
     RegistryVersion { got: u32 },
 
-    #[error("config version {current} requires migration to {latest}; run `clai migrate --dry-run`")]
+    #[error(
+        "config version {current} requires migration to {latest}; run `clai migrate --dry-run`"
+    )]
     ConfigNeedsMigration { current: u32, latest: u32 },
 }
 

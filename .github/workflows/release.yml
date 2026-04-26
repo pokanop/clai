@@ -1,0 +1,54 @@
+# Build release binaries when you publish a GitHub Release.
+# Asset names must contain the Rust target triple (e.g. clai-x86_64-unknown-linux-gnu.tar.gz)
+# so `clai self update` can find them (matches compile-time CLAI_BUILD_TARGET).
+
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  assets:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package (Unix binary)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p pack
+          cp "target/${{ matrix.target }}/release/clai" pack/
+          tar czvf "clai-${{ matrix.target }}.tar.gz" -C pack clai
+      - name: Package (Windows .exe as tar.gz)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p pack
+          cp "target/${{ matrix.target }}/release/clai.exe" pack/
+          tar czvf "clai-${{ matrix.target }}.tar.gz" -C pack clai.exe
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: clai-*.tar.gz

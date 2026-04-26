@@ -8,10 +8,62 @@ use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaChatTemplate, LlamaModel};
+use llama_cpp_2::model::{
+    AddBos, GrammarTrigger, GrammarTriggerType, LlamaChatTemplate, LlamaModel,
+};
 use llama_cpp_2::openai::OpenAIChatTemplateParams;
 use llama_cpp_2::sampling::LlamaSampler;
-use llama_cpp_2::{send_logs_to_tracing, LogOptions};
+use llama_cpp_2::token::LlamaToken;
+use llama_cpp_2::{json_schema_to_grammar, send_logs_to_tracing, GrammarError, LogOptions};
+
+use crate::schema::CommandProposal;
+
+fn grammar_sampler_for_result(
+    model: &LlamaModel,
+    grammar_text: &str,
+    grammar_lazy: bool,
+    triggers: &[GrammarTrigger],
+) -> Result<LlamaSampler, String> {
+    if grammar_lazy {
+        let mut words: Vec<Vec<u8>> = Vec::new();
+        let mut tokens: Vec<LlamaToken> = Vec::new();
+        let mut patterns: Vec<String> = Vec::new();
+        for t in triggers {
+            match t.trigger_type {
+                GrammarTriggerType::Word => words.push(t.value.clone().into_bytes()),
+                GrammarTriggerType::Token => {
+                    if let Some(tok) = t.token {
+                        tokens.push(tok);
+                    }
+                }
+                GrammarTriggerType::Pattern | GrammarTriggerType::PatternFull => {
+                    patterns.push(t.value.clone());
+                }
+            }
+        }
+        let lazy = if !patterns.is_empty() {
+            LlamaSampler::grammar_lazy_patterns(model, grammar_text, "root", &patterns, &tokens)
+                .map_err(|e: GrammarError| format!("grammar_lazy_patterns: {e:?}"))?
+        } else if !words.is_empty() || !tokens.is_empty() {
+            LlamaSampler::grammar_lazy(
+                model,
+                grammar_text,
+                "root",
+                words.iter().map(Vec::as_slice),
+                &tokens,
+            )
+            .map_err(|e: GrammarError| format!("grammar_lazy: {e:?}"))?
+        } else {
+            LlamaSampler::grammar(model, grammar_text, "root")
+                .map_err(|e: GrammarError| format!("grammar (lazy fallback): {e:?}"))?
+        };
+        Ok(LlamaSampler::chain_simple([lazy, LlamaSampler::greedy()]))
+    } else {
+        let g = LlamaSampler::grammar(model, grammar_text, "root")
+            .map_err(|e: GrammarError| format!("grammar: {e:?}"))?;
+        Ok(LlamaSampler::chain_simple([g, LlamaSampler::greedy()]))
+    }
+}
 
 pub fn complete_local(
     model_path: &Path,
@@ -36,6 +88,7 @@ pub fn complete_local(
         .or_else(|_| LlamaChatTemplate::new("chatml"))
         .map_err(|e| format!("chat template: {:?}", e))?;
 
+    let schema_str = CommandProposal::schema_json();
     let messages = serde_json::json!([
         {"role": "system", "content": system},
         {"role": "user", "content": user}
@@ -46,7 +99,7 @@ pub fn complete_local(
         messages_json: &messages,
         tools_json: None,
         tool_choice: None,
-        json_schema: None,
+        json_schema: Some(schema_str),
         grammar: None,
         reasoning_format: None,
         chat_template_kwargs: None,
@@ -62,6 +115,23 @@ pub fn complete_local(
     let rendered = model
         .apply_chat_template_oaicompat(&tmpl, &params)
         .map_err(|e| format!("template: {:?}", e))?;
+
+    let grammar_text: Option<String> = if let Some(ref g) = rendered.grammar {
+        Some(g.clone())
+    } else {
+        json_schema_to_grammar(schema_str).ok()
+    };
+
+    let mut sampler = if let Some(ref gtext) = grammar_text {
+        grammar_sampler_for_result(
+            &model,
+            gtext,
+            rendered.grammar_lazy,
+            &rendered.grammar_triggers,
+        )?
+    } else {
+        LlamaSampler::chain_simple([LlamaSampler::greedy()])
+    };
 
     let n_ctx = NonZeroU32::new(8192).unwrap();
     let threads = std::thread::available_parallelism()
@@ -98,7 +168,6 @@ pub fn complete_local(
     ctx.decode(&mut batch)
         .map_err(|e| format!("decode prompt: {:?}", e))?;
 
-    let mut sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
     let mut decoder = encoding_rs::UTF_8.new_decoder();
     let mut out = String::new();
     let mut n_cur = batch.n_tokens();

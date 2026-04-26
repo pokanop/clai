@@ -46,7 +46,11 @@ enum Commands {
         words: Vec<String>,
         #[arg(long, help = "Only print the proposed JSON argv")]
         print_only: bool,
-        #[arg(long, short = 'y', help = "Auto-confirm policy prompts (use carefully)")]
+        #[arg(
+            long,
+            short = 'y',
+            help = "Auto-confirm policy prompts (use carefully)"
+        )]
         yes: bool,
         #[arg(long, help = "Use cloud OpenAI-compatible API from config")]
         cloud: bool,
@@ -100,6 +104,12 @@ enum MeCmd {
         owner: String,
         #[arg(long, env = "CLAI_UPDATE_REPO_NAME", default_value = "clai")]
         repo: String,
+        /// Target triple to match in the release asset file name (default: compile-time TARGET)
+        #[arg(long, env = "CLAI_UPDATE_TARGET")]
+        target: Option<String>,
+        /// Path inside the release archive; supports {{ bin }}, {{ target }}, {{ version }}
+        #[arg(long, env = "CLAI_UPDATE_BIN_PATH_IN_ARCHIVE")]
+        bin_path_in_archive: Option<String>,
     },
 }
 
@@ -133,7 +143,14 @@ fn run(cli: Cli) -> Result<()> {
             print_only,
             yes,
             cloud,
-        } => cmd_ask(cli.config, cli.model, words.join(" "), print_only, yes, cloud),
+        } => cmd_ask(
+            cli.config,
+            cli.model,
+            words.join(" "),
+            print_only,
+            yes,
+            cloud,
+        ),
         Commands::Models(m) => cmd_models(cli.config, m),
         Commands::Me(m) => cmd_me(m),
         Commands::Migrate(m) => cmd_migrate(cli.config, m),
@@ -195,6 +212,10 @@ fn cmd_doctor(config_path: Option<PathBuf>, model_override: Option<PathBuf>) -> 
     let cfg = config::load_config_raw(config_path.clone()).unwrap_or_default();
     println!("config_version: {}", cfg.config_version);
     println!("dry_run_default: {}", cfg.policy.dry_run_default);
+    println!(
+        "execution.mode: {:?} docker_image: {:?}",
+        cfg.execution.mode, cfg.execution.docker_image
+    );
 
     match resolve_model_path(&cfg, model_override, &reg) {
         Ok(p) => println!("model_path: {}", p.display()),
@@ -244,7 +265,14 @@ fn cmd_ask(
             .api_key_env
             .as_deref()
             .and_then(|e| std::env::var(e).ok());
-        cloud::complete_cloud(base, key.as_deref(), model, &system, &user)?
+        cloud::complete_cloud(
+            base,
+            key.as_deref(),
+            model,
+            &system,
+            &user,
+            cfg.cloud.structured_outputs,
+        )?
     } else {
         let path = resolve_model_path(&cfg, model_override, &reg)?;
         engine::complete_local_best_effort(&path, &system, &user, 256)?
@@ -284,8 +312,16 @@ fn cmd_ask(
         return Ok(());
     }
 
-    let out = executor::run_proposal(&proposal, Duration::from_secs(120), 256 * 1024)?;
-    println!("status: {:?}\nstdout:\n{}\nstderr:\n{}", out.status, out.stdout, out.stderr);
+    let out = executor::run_proposal(
+        &proposal,
+        Duration::from_secs(120),
+        256 * 1024,
+        &cfg.execution,
+    )?;
+    println!(
+        "status: {:?}\nstdout:\n{}\nstderr:\n{}",
+        out.status, out.stdout, out.stderr
+    );
     Ok(())
 }
 
@@ -365,7 +401,11 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
                 .map_err(|e| clai::AppError::Msg(e.to_string()))?;
             let reg: ModelRegistry = serde_json::from_str(&body)?;
             registry::write_registry_cache(&cache, &reg)?;
-            println!("wrote {} (version {})", cache.display(), reg.registry_version);
+            println!(
+                "wrote {} (version {})",
+                cache.display(),
+                reg.registry_version
+            );
         }
     }
     Ok(())
@@ -373,13 +413,21 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
 
 fn cmd_me(m: MeCmd) -> Result<()> {
     match m {
-        MeCmd::Update { check, owner, repo } => {
+        MeCmd::Update {
+            check,
+            owner,
+            repo,
+            target,
+            bin_path_in_archive,
+        } => {
             app_update::self_update(
                 &owner,
                 &repo,
                 "clai",
                 env!("CARGO_PKG_VERSION"),
                 check,
+                target.as_deref(),
+                bin_path_in_archive.as_deref(),
             )?;
         }
     }
@@ -423,4 +471,3 @@ fn build_system_prompt(host: &HostContext) -> String {
         host.path_separator
     )
 }
-

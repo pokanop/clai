@@ -11,6 +11,30 @@ use crate::error::{AppError, Result};
 /// Bump when automatic migrations are required.
 pub const CONFIG_VERSION_LATEST: u32 = 1;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutionMode {
+    #[default]
+    Direct,
+    Docker,
+    Bwrap,
+}
+
+/// Optional sandbox / wrapper for `run` (see `execution.mode`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ExecutionConfig {
+    #[serde(default)]
+    pub mode: ExecutionMode,
+    /// Docker image when `mode = "docker"` (must contain your CLI tools or use a custom image).
+    #[serde(default)]
+    pub docker_image: Option<String>,
+    #[serde(default)]
+    pub docker_extra_args: Vec<String>,
+    /// Extra `bwrap` args before `--` when `mode = "bwrap"`.
+    #[serde(default)]
+    pub bwrap_extra_args: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default = "default_config_version")]
@@ -30,6 +54,9 @@ pub struct AppConfig {
     pub preferred_shell: Option<String>,
 
     #[serde(default)]
+    pub execution: ExecutionConfig,
+
+    #[serde(default)]
     pub policy: PolicyConfig,
 
     #[serde(default)]
@@ -46,7 +73,7 @@ pub struct PolicyConfig {
     pub strict_allowlist: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloudConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -56,6 +83,21 @@ pub struct CloudConfig {
     pub api_key_env: Option<String>,
     #[serde(default)]
     pub model: Option<String>,
+    /// Set false if the server rejects `response_format.type = json_schema`.
+    #[serde(default = "default_true")]
+    pub structured_outputs: bool,
+}
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: None,
+            api_key_env: None,
+            model: None,
+            structured_outputs: true,
+        }
+    }
 }
 
 fn default_config_version() -> u32 {
@@ -74,6 +116,7 @@ impl Default for AppConfig {
             model_path: None,
             execution_profile: None,
             preferred_shell: None,
+            execution: ExecutionConfig::default(),
             policy: PolicyConfig {
                 dry_run_default: true,
                 allowlist_bins: vec![],
@@ -153,4 +196,3 @@ pub fn load_config_raw(path: Option<PathBuf>) -> Result<AppConfig> {
         .extract()
         .map_err(AppError::Config)
 }
-

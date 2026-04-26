@@ -142,9 +142,6 @@ mod tests {
 
     #[test]
     fn classify_bash_path() {
-        assert_eq!(
-            classify_shell_path("/bin/bash"),
-            ShellFamily::Bash
-        );
+        assert_eq!(classify_shell_path("/bin/bash"), ShellFamily::Bash);
     }
 }

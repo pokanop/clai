@@ -5,10 +5,7 @@ use crate::error::Result;
 
 pub fn dry_run(path: Option<std::path::PathBuf>) -> Result<String> {
     let c = load_config_raw(path)?;
-    let mut lines = vec![format!(
-        "current config_version: {}",
-        c.config_version
-    )];
+    let mut lines = vec![format!("current config_version: {}", c.config_version)];
     if c.config_version >= CONFIG_VERSION_LATEST {
         lines.push("no migration needed.".into());
         return Ok(lines.join("\n"));

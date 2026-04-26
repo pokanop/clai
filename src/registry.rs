@@ -117,7 +117,9 @@ pub fn pull_model(model: &RegistryModel, dest_dir: &Path, verify: bool) -> Resul
 
     let api = Api::new().map_err(|e| AppError::Msg(e.to_string()))?;
     let repo = api.model(model.hf_repo.clone());
-    let cached = repo.get(&model.filename).map_err(|e| AppError::Msg(e.to_string()))?;
+    let cached = repo
+        .get(&model.filename)
+        .map_err(|e| AppError::Msg(e.to_string()))?;
     pb.finish_with_message("copying to model dir");
     fs::copy(&cached, &out_path)?;
 

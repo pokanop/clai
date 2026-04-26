@@ -2,6 +2,7 @@
 name = "clai"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 description = "Natural-language to local command CLI with optional embedded GGUF inference"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/pokanop/clai"
@@ -47,9 +48,15 @@ sha2 = "0.10"
 hex = "0.4"
 wait-timeout = "0.2"
 libc = "0.2"
-
 llama-cpp-2 = { version = "0.1.145", optional = true, default-features = false, features = ["sampler"] }
 encoding_rs = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 
 [dev-dependencies]

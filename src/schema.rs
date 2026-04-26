@@ -35,15 +35,21 @@ impl CommandProposal {
 }"##
     }
 
-    /// Extract JSON object from model output (first `{...}` block).
+    /// Parse model output as JSON (grammar-constrained output is usually a single object).
+    ///
+    /// Tries a full-string parse first, then falls back to the first `{...}` slice.
     pub fn parse_from_model_text(text: &str) -> crate::error::Result<Self> {
-        let start = text.find('{').ok_or_else(|| {
-            crate::error::AppError::Msg("no JSON object in model output".into())
-        })?;
-        let rest = &text[start..];
-        let end = rest.rfind('}').ok_or_else(|| {
-            crate::error::AppError::Msg("unclosed JSON in model output".into())
-        })?;
+        let t = text.trim();
+        if let Ok(p) = serde_json::from_str::<Self>(t) {
+            return Ok(p);
+        }
+        let start = t
+            .find('{')
+            .ok_or_else(|| crate::error::AppError::Msg("no JSON object in model output".into()))?;
+        let rest = &t[start..];
+        let end = rest
+            .rfind('}')
+            .ok_or_else(|| crate::error::AppError::Msg("unclosed JSON in model output".into()))?;
         let slice = &rest[..=end];
         serde_json::from_str(slice).map_err(Into::into)
     }
@@ -61,5 +67,13 @@ tail"#;
         let p = CommandProposal::parse_from_model_text(t).unwrap();
         assert_eq!(p.program, "ls");
         assert_eq!(p.args, vec!["-la"]);
+    }
+
+    #[test]
+    fn parses_raw_json_object() {
+        let t = r#"  {"program": "echo", "args": ["hi"]}  "#;
+        let p = CommandProposal::parse_from_model_text(t).unwrap();
+        assert_eq!(p.program, "echo");
+        assert_eq!(p.args, vec!["hi"]);
     }
 }

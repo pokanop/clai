@@ -38,12 +38,7 @@ impl PolicyEngine {
 
     pub fn evaluate(&self, proposal: &CommandProposal) -> PolicyDecision {
         let program_lower = proposal.program.to_lowercase();
-        let joined = format!(
-            "{} {}",
-            proposal.program,
-            proposal.args.join(" ")
-        )
-        .to_lowercase();
+        let joined = format!("{} {}", proposal.program, proposal.args.join(" ")).to_lowercase();
 
         if self.strict_allowlist && !self.allowlist_bins.is_empty() {
             let ok = self
@@ -166,7 +161,9 @@ fn sensitive_tier(program: &str, full: &str) -> Option<RiskTier> {
     if sensitive.contains(&program) {
         return Some(RiskTier::Sensitive);
     }
-    let readonly = ["ls", "cat", "head", "tail", "less", "find", "grep", "which", "pwd"];
+    let readonly = [
+        "ls", "cat", "head", "tail", "less", "find", "grep", "which", "pwd",
+    ];
     if readonly.contains(&program) {
         return Some(RiskTier::ReadOnly);
     }
