@@ -61,6 +61,11 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub cloud: CloudConfig,
+
+    /// When true, `clai ask` uses machine-oriented output (full proposal + captured streams) unless
+    /// overridden on the command line. CLI `--verbose` / `CLAI_ASK_VERBOSE` also enables this.
+    #[serde(default)]
+    pub ask_verbose: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -123,6 +128,7 @@ impl Default for AppConfig {
                 strict_allowlist: false,
             },
             cloud: CloudConfig::default(),
+            ask_verbose: false,
         }
     }
 }

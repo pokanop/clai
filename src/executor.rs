@@ -1,12 +1,18 @@
+//! Run [`CommandProposal`] subprocesses with piped capture or inherited stdio ([`StreamStrategy`]).
+//! **Unix / direct:** `pre_exec` still calls `setpgid(0, 0)` for both capture and inherit (unchanged).
+//! **Windows / direct:** job object + breakaway spawn for both strategies (unchanged).
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use wait_timeout::ChildExt;
 
+use crate::ask_exit::{clai_ask_process_exit_for_child, CLAI_ASK_TIMEOUT_EXIT};
 use crate::config::{ExecutionConfig, ExecutionMode};
 use crate::error::{AppError, Result};
 use crate::schema::CommandProposal;
+use crate::stream_strategy::StreamStrategy;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -23,6 +29,9 @@ use windows::Win32::System::JobObjects::{
 #[derive(Debug, Clone)]
 pub struct RunOutcome {
     pub status: Option<i32>,
+    /// Value `clai` should use as the **process** exit code for `clai ask` after this run
+    /// (child exit, signal mapping, or [`CLAI_ASK_TIMEOUT_EXIT`] for executor timeout).
+    pub clai_ask_process_exit: i32,
     pub stdout: String,
     pub stderr: String,
     pub timed_out: bool,
@@ -155,16 +164,38 @@ fn build_command(proposal: &CommandProposal, execution: &ExecutionConfig) -> Res
     }
 }
 
+/// Runs the proposal: either **piped capture** (null stdin, size-limited read of stdout/stderr)
+/// or **inherited stdio** when `stream_strategy` is [`StreamStrategy::Inherit`] (direct host runs
+/// only; Docker/bwrap use capture — see [`select_stream_strategy`](crate::stream_strategy::select_stream_strategy)).
+///
+/// For inherited stdio, child output is not captured into [`RunOutcome`]; the terminal shows it
+/// directly. Timeout behavior matches the capture path (kill + `timed_out`).
 pub fn run_proposal(
     proposal: &CommandProposal,
     timeout: std::time::Duration,
     max_capture_bytes: usize,
     execution: &ExecutionConfig,
+    stream_strategy: StreamStrategy,
 ) -> Result<RunOutcome> {
+    if stream_strategy == StreamStrategy::Inherit && execution.mode != ExecutionMode::Direct {
+        return Err(AppError::Msg(
+            "inherited stdio is only valid for execution.mode = \"direct\"".into(),
+        ));
+    }
+
     let mut cmd = build_command(proposal, execution)?;
-    cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
+    match stream_strategy {
+        StreamStrategy::Capture => {
+            cmd.stdin(Stdio::null());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+        }
+        StreamStrategy::Inherit => {
+            cmd.stdin(Stdio::inherit());
+            cmd.stdout(Stdio::inherit());
+            cmd.stderr(Stdio::inherit());
+        }
+    }
 
     #[cfg(unix)]
     if execution.mode == ExecutionMode::Direct {
@@ -213,6 +244,7 @@ pub fn run_proposal(
             let _ = child.wait();
             return Ok(RunOutcome {
                 status: None,
+                clai_ask_process_exit: CLAI_ASK_TIMEOUT_EXIT,
                 stdout: String::new(),
                 stderr: String::from("(killed: timeout)"),
                 timed_out: true,
@@ -220,14 +252,26 @@ pub fn run_proposal(
         }
     };
 
-    finish_child(child, exit, max_capture_bytes)
+    finish_child(child, exit, max_capture_bytes, stream_strategy)
 }
 
 fn finish_child(
     mut child: std::process::Child,
     exit: std::process::ExitStatus,
     max_capture_bytes: usize,
+    stream_strategy: StreamStrategy,
 ) -> Result<RunOutcome> {
+    if stream_strategy == StreamStrategy::Inherit {
+        let clai_ask_process_exit = clai_ask_process_exit_for_child(&exit);
+        return Ok(RunOutcome {
+            status: exit.code(),
+            clai_ask_process_exit,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+        });
+    }
+
     let mut stdout = String::new();
     let mut stderr = String::new();
     if let Some(mut out) = child.stdout.take() {
@@ -243,8 +287,164 @@ fn finish_child(
 
     Ok(RunOutcome {
         status: exit.code(),
+        clai_ask_process_exit: clai_ask_process_exit_for_child(&exit),
         stdout,
         stderr,
         timed_out: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ExecutionConfig;
+    use crate::schema::CommandProposal;
+    use crate::stream_strategy::StreamStrategy;
+
+    fn execution_direct() -> ExecutionConfig {
+        ExecutionConfig {
+            mode: ExecutionMode::Direct,
+            ..Default::default()
+        }
+    }
+
+    fn ok_proposal() -> CommandProposal {
+        #[cfg(unix)]
+        {
+            CommandProposal {
+                program: "true".to_string(),
+                args: vec![],
+                cwd: None,
+                reason: None,
+                needs_shell: false,
+                confidence: None,
+            }
+        }
+        #[cfg(windows)]
+        {
+            CommandProposal {
+                program: "cmd".to_string(),
+                args: vec!["/C".to_string(), "exit".to_string(), "0".to_string()],
+                cwd: None,
+                reason: None,
+                needs_shell: false,
+                confidence: None,
+            }
+        }
+    }
+
+    #[test]
+    fn capture_trivial_succeeds() {
+        let out = run_proposal(
+            &ok_proposal(),
+            std::time::Duration::from_secs(5),
+            16 * 1024,
+            &execution_direct(),
+            StreamStrategy::Capture,
+        )
+        .expect("run");
+        assert!(!out.timed_out);
+        assert_eq!(out.status, Some(0), "expected success exit, got {:?}", out);
+        assert_eq!(out.clai_ask_process_exit, 0);
+    }
+
+    /// Exit-code mapping in [`crate::ask_exit`] matches `RunOutcome::clai_ask_process_exit` for
+    /// a failing trivial child (non-TTY capture path; task 1.8).
+    #[test]
+    fn capture_failing_child_preserves_status_and_clai_ask_process_exit() {
+        let proposal = {
+            #[cfg(unix)]
+            {
+                CommandProposal {
+                    program: "sh".to_string(),
+                    args: vec!["-c".to_string(), "exit 7".to_string()],
+                    cwd: None,
+                    reason: None,
+                    needs_shell: false,
+                    confidence: None,
+                }
+            }
+            #[cfg(windows)]
+            {
+                CommandProposal {
+                    program: "cmd".to_string(),
+                    args: vec!["/C".to_string(), "exit".to_string(), "7".to_string()],
+                    cwd: None,
+                    reason: None,
+                    needs_shell: false,
+                    confidence: None,
+                }
+            }
+        };
+        let out = run_proposal(
+            &proposal,
+            std::time::Duration::from_secs(5),
+            16 * 1024,
+            &execution_direct(),
+            StreamStrategy::Capture,
+        )
+        .expect("run");
+        assert!(!out.timed_out);
+        assert_eq!(out.status, Some(7));
+        assert_eq!(out.clai_ask_process_exit, 7);
+    }
+
+    #[test]
+    fn inherit_trivial_succeeds() {
+        let out = run_proposal(
+            &ok_proposal(),
+            std::time::Duration::from_secs(5),
+            16 * 1024,
+            &execution_direct(),
+            StreamStrategy::Inherit,
+        )
+        .expect("run");
+        assert!(!out.timed_out);
+        assert_eq!(out.status, Some(0), "expected success exit, got {:?}", out);
+        assert_eq!(out.clai_ask_process_exit, 0);
+        assert!(out.stdout.is_empty() && out.stderr.is_empty());
+    }
+
+    /// Short timeout; child sleeps long. Unix only so CI is deterministic without Windows sleep quirks.
+    #[test]
+    #[cfg(unix)]
+    fn run_proposal_timeout_sets_process_exit_124() {
+        use std::time::Duration;
+
+        use crate::ask_exit::CLAI_ASK_TIMEOUT_EXIT;
+
+        let p = CommandProposal {
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), "sleep 100".to_string()],
+            cwd: None,
+            reason: None,
+            needs_shell: false,
+            confidence: None,
+        };
+        let out = run_proposal(
+            &p,
+            Duration::from_millis(200),
+            16 * 1024,
+            &execution_direct(),
+            StreamStrategy::Capture,
+        )
+        .expect("run");
+        assert!(out.timed_out, "expected timeout, got {out:?}");
+        assert_eq!(out.clai_ask_process_exit, CLAI_ASK_TIMEOUT_EXIT);
+    }
+
+    #[test]
+    fn inherit_rejected_for_docker() {
+        let e = run_proposal(
+            &ok_proposal(),
+            std::time::Duration::from_secs(5),
+            16 * 1024,
+            &ExecutionConfig {
+                mode: ExecutionMode::Docker,
+                ..Default::default()
+            },
+            StreamStrategy::Inherit,
+        );
+        assert!(e.is_err());
+    }
 }

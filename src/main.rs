@@ -1,5 +1,6 @@
 #![allow(clippy::result_large_err, clippy::field_reassign_with_default)]
 
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -7,10 +8,12 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use clai::app_update;
+use clai::ask_exit::{CLAI_ASK_DRY_RUN_EXIT, CLAI_ASK_USER_DECLINED_EXIT};
 use clai::cloud;
 use clai::config::{
     self, default_config_path, default_data_dir, default_models_dir, default_registry_cache_path,
-    installed_model_path, resolve_registry_cache_path_for_read, AppConfig,
+    installed_model_path, resolve_registry_cache_path_for_read, AppConfig, ExecutionConfig,
+    ExecutionMode,
 };
 use clai::engine;
 use clai::executor;
@@ -19,6 +22,9 @@ use clai::migrate;
 use clai::policy::PolicyEngine;
 use clai::registry::{self, ModelRegistry};
 use clai::schema::CommandProposal;
+use clai::stream_strategy::{
+    current_user_terminal_context, select_stream_strategy, OutputIntent, StreamStrategy,
+};
 use clai::Result;
 
 /// Natural-language → local command (embedded GGUF optional).
@@ -45,8 +51,18 @@ enum Commands {
     Ask {
         #[arg(trailing_var_arg = true, required = true)]
         words: Vec<String>,
-        #[arg(long, help = "Only print the proposed JSON argv")]
+        #[arg(
+            long,
+            help = "Only print the proposed argv as JSON, then exit (does not run the command; same proposal shape as a normal run). Combine with --verbose to force the pre-exec pretty-printed proposal even in future minimal-default modes"
+        )]
         print_only: bool,
+        #[arg(
+            long,
+            short = 'v',
+            env = "CLAI_ASK_VERBOSE",
+            help = "Opt in to full pretty-printed proposal before run; forces captured streams (use for audits and CI). Set ask_verbose in config.toml or CLAI_ASK_VERBOSE=1"
+        )]
+        verbose: bool,
         #[arg(
             long,
             short = 'y',
@@ -142,6 +158,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Ask {
             words,
             print_only,
+            verbose,
             yes,
             cloud,
         } => cmd_ask(
@@ -149,6 +166,7 @@ fn run(cli: Cli) -> Result<()> {
             cli.model,
             words.join(" "),
             print_only,
+            verbose,
             yes,
             cloud,
         ),
@@ -243,6 +261,7 @@ fn cmd_ask(
     model_override: Option<PathBuf>,
     prompt: String,
     print_only: bool,
+    verbose: bool,
     yes: bool,
     use_cloud: bool,
 ) -> Result<()> {
@@ -285,7 +304,16 @@ fn cmd_ask(
     };
 
     let proposal = CommandProposal::parse_from_model_text(&raw)?;
-    println!("Proposed: {}", serde_json::to_string_pretty(&proposal)?);
+    if print_only {
+        println!("Proposed: {}", serde_json::to_string_pretty(&proposal)?);
+        println!("(print-only; not executed)");
+        return Ok(());
+    }
+
+    let verbose_ask = verbose || cfg.ask_verbose;
+    if verbose_ask {
+        println!("Proposed: {}", serde_json::to_string_pretty(&proposal)?);
+    }
 
     let jail = std::env::current_dir()?;
     let policy = PolicyEngine::new(
@@ -302,11 +330,6 @@ fn cmd_ask(
         ));
     }
 
-    if print_only {
-        println!("(print-only; not executed)");
-        return Ok(());
-    }
-
     if decision.requires_confirmation && !yes {
         let ok = inquire::Confirm::new("This command is sensitive or destructive. Run it?")
             .with_default(false)
@@ -314,26 +337,256 @@ fn cmd_ask(
             .map_err(|e| clai::AppError::Msg(e.to_string()))?;
         if !ok {
             println!("Aborted.");
-            return Ok(());
+            std::process::exit(CLAI_ASK_USER_DECLINED_EXIT);
         }
     }
 
     if cfg.policy.dry_run_default && !yes {
         println!("(dry-run; not executed)");
-        return Ok(());
+        std::process::exit(CLAI_ASK_DRY_RUN_EXIT);
     }
 
+    let output_intent = if verbose_ask {
+        OutputIntent::Verbose
+    } else {
+        OutputIntent::Human
+    };
+    let stream = select_stream_strategy(
+        cfg.execution.mode,
+        output_intent,
+        current_user_terminal_context(),
+    );
+    let is_non_direct = matches!(
+        cfg.execution.mode,
+        ExecutionMode::Docker | ExecutionMode::Bwrap
+    );
+    if !verbose_ask && io::stdout().is_terminal() {
+        if let Some(line) = non_direct_context_one_line(&proposal, &cfg.execution)? {
+            println!("{line}");
+        } else {
+            println!("Run: {}", ask_command_line_preview(&proposal));
+        }
+    }
     let out = executor::run_proposal(
         &proposal,
         Duration::from_secs(120),
         256 * 1024,
         &cfg.execution,
+        stream,
     )?;
-    println!(
-        "status: {:?}\nstdout:\n{}\nstderr:\n{}",
-        out.status, out.stdout, out.stderr
-    );
-    Ok(())
+    if verbose_ask {
+        if let Some(ctx) = non_direct_context_verbose(&proposal, &cfg.execution)? {
+            println!("{ctx}\n");
+        }
+        println!(
+            "status: {:?}\nstdout:\n{}\nstderr:\n{}",
+            out.status, out.stdout, out.stderr
+        );
+    } else {
+        match stream {
+            StreamStrategy::Inherit => {}
+            StreamStrategy::Capture => {
+                if is_non_direct && !io::stdout().is_terminal() {
+                    if let Some(line) = non_direct_context_one_line(&proposal, &cfg.execution)? {
+                        println!("{line}");
+                    }
+                }
+                if !out.stdout.is_empty() {
+                    print!("{}", out.stdout);
+                }
+                if !out.stderr.is_empty() {
+                    eprint!("{}", out.stderr);
+                }
+            }
+        }
+    }
+    std::process::exit(out.clai_ask_process_exit);
+}
+
+/// One-line argv preview (program + args only) for default human `ask`; omits `reason`/`cwd` and
+/// other model fields so we do not add policy-bypass or secret guidance (FR-5).
+fn ask_command_line_preview(p: &CommandProposal) -> String {
+    let mut s = shell_escape_for_display(&p.program);
+    for a in &p.args {
+        s.push(' ');
+        s.push_str(&shell_escape_for_display(a));
+    }
+    s
+}
+
+/// Display-only quoting for a single argv token.
+fn shell_escape_for_display(t: &str) -> String {
+    if t.is_empty() {
+        return "''".to_string();
+    }
+    if t.chars()
+        .any(|c| c.is_whitespace() || matches!(c, '\\' | '\'' | '"'))
+    {
+        format!("'{}'", t.replace('\'', "'\"'\"'"))
+    } else {
+        t.to_string()
+    }
+}
+
+fn effective_proposal_cwd(proposal: &CommandProposal) -> std::io::Result<PathBuf> {
+    if let Some(c) = &proposal.cwd {
+        Ok(PathBuf::from(c))
+    } else {
+        std::env::current_dir()
+    }
+}
+
+/// Program, working directory, and `execution.mode` in one line for container/sandbox runs (FR-6).
+/// Returns `None` when `mode` is `direct`.
+fn non_direct_context_one_line(
+    proposal: &CommandProposal,
+    execution: &ExecutionConfig,
+) -> std::io::Result<Option<String>> {
+    let cwd = effective_proposal_cwd(proposal)?;
+    let cmd = ask_command_line_preview(proposal);
+    match execution.mode {
+        ExecutionMode::Direct => Ok(None),
+        ExecutionMode::Docker => {
+            let img = execution.docker_image.as_deref().unwrap_or("alpine:latest");
+            Ok(Some(format!(
+                "clai: profile=docker  image={img}  cwd={}  {cmd}",
+                cwd.display()
+            )))
+        }
+        ExecutionMode::Bwrap => Ok(Some(format!(
+            "clai: profile=bwrap  cwd={}  {cmd}",
+            cwd.display()
+        ))),
+    }
+}
+
+/// Extra wrapper metadata for verbose `ask` (operators).
+fn non_direct_context_verbose(
+    proposal: &CommandProposal,
+    execution: &ExecutionConfig,
+) -> std::io::Result<Option<String>> {
+    let Some(mut s) = non_direct_context_one_line(proposal, execution)? else {
+        return Ok(None);
+    };
+    if execution.mode == ExecutionMode::Docker && !execution.docker_extra_args.is_empty() {
+        s.push_str("\n  docker_extra_args: ");
+        s.push_str(&format!("{:?}", execution.docker_extra_args));
+    }
+    if execution.mode == ExecutionMode::Bwrap && !execution.bwrap_extra_args.is_empty() {
+        s.push_str("\n  bwrap_extra_args: ");
+        s.push_str(&format!("{:?}", execution.bwrap_extra_args));
+    }
+    Ok(Some(s))
+}
+
+#[cfg(test)]
+mod ask_preview_tests {
+    use super::{ask_command_line_preview, shell_escape_for_display};
+    use clai::schema::CommandProposal;
+
+    fn proposal(program: &str, args: &[&str]) -> CommandProposal {
+        CommandProposal {
+            program: program.to_string(),
+            args: args.iter().map(|s| (*s).to_string()).collect(),
+            cwd: None,
+            reason: None,
+            needs_shell: false,
+            confidence: None,
+        }
+    }
+
+    #[test]
+    fn preview_program_and_args() {
+        assert_eq!(ask_command_line_preview(&proposal("ls", &[])), "ls");
+        assert_eq!(
+            ask_command_line_preview(&proposal("ls", &["-la"])),
+            "ls -la"
+        );
+    }
+
+    #[test]
+    fn preview_omits_model_metadata() {
+        let p = CommandProposal {
+            program: "true".to_string(),
+            args: vec![],
+            cwd: None,
+            reason: Some("secret or bypass hint from model".to_string()),
+            needs_shell: false,
+            confidence: None,
+        };
+        let line = ask_command_line_preview(&p);
+        assert!(!line.contains("reason"));
+        assert!(!line.contains("bypass"));
+    }
+
+    #[test]
+    fn escape_quotes_arg_with_space() {
+        assert_eq!(
+            ask_command_line_preview(&proposal("echo", &["a b"])),
+            "echo 'a b'"
+        );
+    }
+
+    #[test]
+    fn escape_empty_token() {
+        assert_eq!(shell_escape_for_display(""), "''");
+    }
+}
+
+#[cfg(test)]
+mod non_direct_context_tests {
+    use clai::config::{ExecutionConfig, ExecutionMode};
+
+    use super::non_direct_context_one_line;
+    use clai::schema::CommandProposal;
+
+    fn p() -> CommandProposal {
+        CommandProposal {
+            program: "sh".to_string(),
+            args: vec!["-c".to_string(), "true".to_string()],
+            cwd: None,
+            reason: None,
+            needs_shell: false,
+            confidence: None,
+        }
+    }
+
+    #[test]
+    fn direct_mode_returns_none() {
+        let e = ExecutionConfig {
+            mode: ExecutionMode::Direct,
+            ..Default::default()
+        };
+        assert!(non_direct_context_one_line(&p(), &e).unwrap().is_none());
+    }
+
+    #[test]
+    fn docker_includes_image_and_cwd() {
+        let e = ExecutionConfig {
+            mode: ExecutionMode::Docker,
+            docker_image: Some("myimg:tag".into()),
+            ..Default::default()
+        };
+        let line = non_direct_context_one_line(&p(), &e)
+            .unwrap()
+            .expect("line");
+        assert!(line.contains("profile=docker"));
+        assert!(line.contains("image=myimg:tag"));
+        assert!(line.contains("sh"));
+        assert!(line.contains("cwd="));
+    }
+
+    #[test]
+    fn bwrap_contains_profile() {
+        let e = ExecutionConfig {
+            mode: ExecutionMode::Bwrap,
+            ..Default::default()
+        };
+        let line = non_direct_context_one_line(&p(), &e)
+            .unwrap()
+            .expect("line");
+        assert!(line.contains("profile=bwrap"));
+    }
 }
 
 fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
@@ -390,9 +643,8 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
             let m = reg
                 .find(&id)
                 .ok_or_else(|| clai::AppError::Msg(format!("unknown model {}", id)))?;
-            let p = installed_model_path(&m.filename).ok_or_else(|| {
-                clai::AppError::Msg(format!("model file not present: {}", id))
-            })?;
+            let p = installed_model_path(&m.filename)
+                .ok_or_else(|| clai::AppError::Msg(format!("model file not present: {}", id)))?;
             std::fs::remove_file(&p)?;
             println!("removed {}", p.display());
         }
