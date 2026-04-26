@@ -28,10 +28,10 @@ None. Resolved decisions are recorded in PRD Section 9.
 | Metric        | Count |
 | ------------- | ----- |
 | Total Tasks   | 19    |
-| Completed     | 13    |
+| Completed     | 19    |
 | In Progress   | 0     |
 | Blocked       | 0     |
-| Not Started   | 6     |
+| Not Started   | 0     |
 
 ## 2. Phase sections
 
@@ -182,7 +182,7 @@ None. Resolved decisions are recorded in PRD Section 9.
   - **Notes**: `cargo fmt --check` is a PRD quality gate even if not yet in `.github/workflows/ci.yml`; consider adding it to CI as part of this phase or a fast-follow.
   - **Completed**: 2026-04-26
 
-## Phase 2: Flags, docs hardening, edge-case coverage
+## Phase 2: Flags, docs hardening, edge-case coverage (6/6 tasks complete)
 
 > Tightens operator documentation, adds optional capture/preview controls, and expands automated tests for edge cases called out in the PRD’s Phase 2.
 >
@@ -190,57 +190,63 @@ None. Resolved decisions are recorded in PRD Section 9.
 
 ### Product and docs
 
-- [ ] **2.1 Documentation pass: execution modes, TTY vs capture, troubleshooting** `[P1]` `[M]`
+- [x] **2.1 Documentation pass: execution modes, TTY vs capture, troubleshooting** `[P1]` `[M]`
   - **Depends on**: Task 1.13
   - **Requirements**: FR-6, NFR-4, SC-2
   - **Acceptance Criteria**:
-    - [ ] User-facing docs explain when streams are inherited vs captured, how Docker/bwrap differs, and where to use verbose mode for audits.
-    - [ ] Timeout / large-output limitations from PRD risks are addressed in docs.
+    - [x] User-facing docs explain when streams are inherited vs captured, how Docker/bwrap differs, and where to use verbose mode for audits.
+    - [x] Timeout / large-output limitations from PRD risks are addressed in docs.
   - **Notes**: Align with stakeholder table in PRD Section 4.
+  - **Completed**: 2026-04-26. Added README *`clai ask`: when I/O is inherited vs captured* (table for direct/TTY, non-TTY, verbose, docker/bwrap), timeout (120s) and per-stream 256 KiB capture cap, troubleshooting bullets; `cargo fmt`, `test`, `clippy --all-targets`, `build` verified.
 
-- [ ] **2.2 Optional flag to force capture on direct runs** `[P1]` `[M]`
+- [x] **2.2 Optional flag to force capture on direct runs** `[P1]` `[M]`
   - **Depends on**: Task 1.13
   - **Requirements**: PRD Phase 2 (example: “force capture”), FR-1
   - **Acceptance Criteria**:
-    - [ ] Operators can force piped capture even when direct+TTY would inherit, without disabling policy.
-    - [ ] Behavior is documented in `--help` and README.
+    - [x] Operators can force piped capture even when direct+TTY would inherit, without disabling policy.
+    - [x] Behavior is documented in `--help` and README.
   - **Notes**: Mitigates “TTY inheritance breaks capture-based limits” risk from PRD §8.
+  - **Completed**: 2026-04-26. `select_stream_strategy(..., force_capture)`; `--force-capture` / `ask_force_capture` / `CLAI_ASK_FORCE_CAPTURE`; README table + clap help.
 
-- [ ] **2.3 Optional flag to suppress the one-line pre-execution preview** `[P1]` `[S]`
+- [x] **2.3 Optional flag to suppress the one-line pre-execution preview** `[P1]` `[S]`
   - **Depends on**: Task 1.13
   - **Requirements**: PRD Phase 2, FR-1
   - **Acceptance Criteria**:
-    - [ ] Users can disable the single-line preview for scripting or minimal output.
-    - [ ] Default remains PRD-conformant when the flag is unset.
+    - [x] Users can disable the single-line preview for scripting or minimal output.
+    - [x] Default remains PRD-conformant when the flag is unset.
+  - **Completed**: 2026-04-26. `--no-preview` / `ask_no_preview` / `CLAI_ASK_NO_PREVIEW`; suppresses TTY pre line and post non-TTY non-direct attribution; default unchanged when off.
 
 ### Automated coverage
 
-- [ ] **2.4 Tests: large output, truncation, and long-running child interactions** `[P1]` `[M]`
+- [x] **2.4 Tests: large output, truncation, and long-running child interactions** `[P1]` `[M]`
   - **Depends on**: Task 1.13
   - **Requirements**: PRD Phase 2, PRD Risk (timeout / limits)
   - **Acceptance Criteria**:
-    - [ ] Automated tests cover large stdout/stderr behavior and timeout termination for capture path (non-TTY) per existing `max_capture_bytes` / timeout semantics.
+    - [x] Automated tests cover large stdout/stderr behavior and timeout termination for capture path (non-TTY) per existing `max_capture_bytes` / timeout semantics.
   - **Notes**: Keep within CI runtime budgets.
+  - **Completed**: 2026-04-26. `tests/phase2_edge_cases.rs` (`capture_truncates_large_stdout` with output below pipe cap; `capture_times_out`); module comment on pipe deadlocks.
 
-- [ ] **2.5 Tests: binary or noisy output handling (policy + verbose-only warnings)** `[P1]` `[M]`
+- [x] **2.5 Tests: binary or noisy output handling (policy + verbose-only warnings)** `[P1]` `[M]`
   - **Depends on**: Task 1.13
   - **Requirements**: PRD Phase 2, PRD Risk (binary/noisy output)
   - **Acceptance Criteria**:
-    - [ ] Tests or documented checks ensure policy still gates execution; verbose path may warn without polluting default human output.
+    - [x] Tests or documented checks ensure policy still gates execution; verbose path may warn without polluting default human output.
   - **Notes**: Scope strictly to PRD Phase 2 wording—avoid new policy product surface without review.
+  - **Completed**: 2026-04-26. `policy_still_blocks_obvious_destructive_proposal` + `capture_stdout_non_utf8_is_lossy`; verbose `stderr` one-line note when U+FFFD in captured strings; README *Binary or non-UTF-8* + policy bullet.
 
 ### Verification
 
-- [ ] **2.6 Phase 2 verification: quality gates** `[P0]` `[M]`
+- [x] **2.6 Phase 2 verification: quality gates** `[P0]` `[M]`
   - **Depends on**: Tasks 2.1–2.5
   - **Requirements**: SC-4, QG-1–QG-4
   - **Acceptance Criteria**:
-    - [ ] All Phase 2 tasks complete or skipped with rationale.
-    - [ ] `cargo test --no-default-features --locked` passes.
-    - [ ] `cargo clippy --no-default-features --locked -- -D warnings` passes.
-    - [ ] `cargo build --locked` passes.
-    - [ ] `cargo fmt --check` passes.
-  - **Notes**: QG-5 applies if execution paths materially change in Phase 2.
+    - [x] All Phase 2 tasks complete or skipped with rationale.
+    - [x] `cargo test --no-default-features --locked` passes.
+    - [x] `cargo clippy --no-default-features --locked -- -D warnings` passes (use `--all-targets` to lint integration tests; stricter than tasks text).
+    - [x] `cargo build --locked` passes.
+    - [x] `cargo fmt --check` passes.
+  - **Notes**: QG-5: Phase 2 extends `cmd_ask` and stream strategy; same security posture (policy before run). Re-review on merge as usual.
+  - **Completed**: 2026-04-26. All gates run locally; `CHANGELOG.md` Unreleased *Added (Phase 2)*.
 
 ## 3. Dependency graph
 

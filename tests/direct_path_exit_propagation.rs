@@ -190,7 +190,7 @@ fn non_tty_inherit_child_exit_19() {
 #[test]
 fn verbose_resolves_to_capture_on_non_tty_and_propagates_exit() {
     let ctx = ctx_non_tty();
-    let stream = select_stream_strategy(ExecutionMode::Direct, OutputIntent::Verbose, ctx);
+    let stream = select_stream_strategy(ExecutionMode::Direct, OutputIntent::Verbose, ctx, false);
     assert_eq!(
         stream,
         StreamStrategy::Capture,

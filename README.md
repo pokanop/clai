@@ -47,6 +47,31 @@ Local `ask` passes your command-proposal **JSON Schema** into the chat template 
 
 `execution.mode` in config can be `direct` (default), `docker`, or `bwrap` (Unix only). For Docker, set `execution.docker_image` to an image that contains the tools you need; the workspace directory is bind-mounted read-write.
 
+### `clai ask`: when I/O is inherited vs captured
+
+`clai` connects the child’s stdin, stdout, and stderr either to **your terminal** (inherited) or to **pipes** with a bounded read (captured). The default human path uses the same rules as the PRD’s “native shell” story: interactive terminal I/O in direct mode where it is safe to attach to the TTY; captured streams everywhere policy or tooling requires isolation or machine-oriented output.
+
+| Situation | Stream connection | Notes |
+| --- | --- | --- |
+| `execution.mode = direct`, default human output, and **stdin, stdout, and stderr** are all TTYs | **Inherited** | Child output behaves like running the same argv in your terminal (colors, pagers, etc. where the tool and OS allow). |
+| `execution.mode = direct`, but any of stdin/stdout/stderr is **not** a TTY (e.g. script, CI) | **Captured** | Piped I/O; `clai` can label non-direct runs and print captured stdout/stderr after the run. |
+| **Verbose** (`--verbose` / `-v`, `ask_verbose` in config, or `CLAI_ASK_VERBOSE`) | **Captured** | Full proposal JSON and structured `status` / `stdout` / `stderr` for audits and logging—always capture, even on a TTY. |
+| `execution.mode = docker` or `bwrap` | **Captured** | Isolated subprocess or container: streams are not forwarded to the host TTY in this phase. The tool prints a short **profile / cwd / argv** line (and verbose metadata when using `--verbose`) so output is attributable to the command (FR-6). |
+| **`--force-capture`** (`ask_force_capture` in `config.toml`, or `CLAI_ASK_FORCE_CAPTURE=1`) in **direct** mode | **Captured** | Opt-in: use size-limited piped I/O and post-run printing even when all stdio are TTYs (policy unchanged). Useful when you need the same capture semantics as non-TTY runs. |
+| **`--no-preview`** (`ask_no_preview` in config, or `CLAI_ASK_NO_PREVIEW=1`) | *unchanged stream choice* | Hides the single human-default **pre-run** line (`Run: …` or non-direct context) and the non-TTY attribution line for docker/bwrap; does not by itself switch inherit ↔ capture. |
+
+**Operator / audit path:** use **`--verbose`** (or the config/env above) when you need the full `CommandProposal` and captured execution record, not the minimal default.
+
+**Timeout and output size (risks: long runs, large streams):** `clai ask` uses a **120 second** wall-clock cap per run; if the child is still running, it is stopped and `clai` exits with **`124`** (same idea as GNU `timeout(1)` on many systems). On the **capture** path, each of stdout and stderr is read with a **256 KiB** cap per stream; excess is truncated (see the executor in `src/executor.rs`). On the **inherited** path, the child writes directly to your terminal: those byte caps do not apply, but the same **120 s** timeout still kills an unresponsive or hung child.
+
+**Troubleshooting (quick):**
+
+- **No colors or pager behavior** in default mode: you may be on the capture path (piped stdout, CI, or not all stdio TTYs). Run in a normal interactive terminal with direct mode, or compare with the [Manual verification: TTY (SC-2)](#manual-verification-tty-sc-2-phase-1) steps.
+- **Need full JSON and stream capture for a report:** add **`--verbose`**; do not rely on default output for a structured audit trail.
+- **Docker/bwrap output looks “boxed”** compared to direct: expected—those modes are capture-first; check the printed profile/cwd/argv and use verbose for a fuller record.
+- **Policy:** blocked proposals still fail before any `exec`; see [`src/policy.rs`](src/policy.rs) and automated coverage (including integration tests) for high-risk patterns.
+- **Binary or non-UTF-8 child output (capture path):** bytes are interpreted with a lossy UTF-8 decode; replacement characters (U+FFFD) can appear. Default human output does not add a separate **stderr** note. **`--verbose`** may print a one-line note to **stderr** when the captured `stdout`/`stderr` contains U+FFFD, without changing default human mode.
+
 ### clai ask exit codes
 
 When `clai ask` actually **runs** a command, the `clai` process usually exits with the child’s status code. On **Unix**, if the child was terminated by a signal and the OS does not report an 8-bit code, the exit value follows the common `128 + signal` convention. If the run hits the executor’s **timeout** and the child is killed, the process exits with **`124`** (the same as GNU `timeout(1)` on many Linux systems). If the user **declines** the run confirmation, the process exits with **`2`** and no child is started. If **dry-run** applies and nothing is executed, the process exits with **`3`**. A policy block, model parse error, or other `clai` failure before any run still exits with a **non-zero** code (the policy message goes to `stderr` via the normal error path). With **`--print-only`**, a successful run exits **`0`**: no command is executed, so the exit value does not represent a child process. For full detail see [`src/ask_exit.rs`](src/ask_exit.rs).
