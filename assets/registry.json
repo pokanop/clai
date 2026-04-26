@@ -1,0 +1,32 @@
+{
+  "registry_version": 1,
+  "models": [
+    {
+      "id": "fast-qwen25-coder-3b-q4",
+      "display_name": "Qwen2.5 Coder 3B Instruct (Q4_K_M)",
+      "profile": "fast",
+      "hf_repo": "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF",
+      "filename": "Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
+      "sha256": null,
+      "ram_hint_gb": 6
+    },
+    {
+      "id": "balanced-qwen25-coder-7b-q4",
+      "display_name": "Qwen2.5 Coder 7B Instruct (Q4_K_M)",
+      "profile": "balanced",
+      "hf_repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+      "filename": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+      "sha256": null,
+      "ram_hint_gb": 10
+    },
+    {
+      "id": "capable-qwen25-coder-14b-q4",
+      "display_name": "Qwen2.5 Coder 14B Instruct (Q4_K_M)",
+      "profile": "capable",
+      "hf_repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
+      "filename": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+      "sha256": null,
+      "ram_hint_gb": 18
+    }
+  ]
+}

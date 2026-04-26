@@ -1,0 +1,60 @@
+[package]
+name = "clai"
+version = "0.1.0"
+edition = "2021"
+description = "Natural-language to local command CLI with optional embedded GGUF inference"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pokanop/clai"
+default-run = "clai"
+
+[features]
+default = ["llama"]
+# Embedded llama.cpp (requires CMake + Clang). Disable for CI: cargo test --no-default-features
+llama = ["dep:llama-cpp-2", "llama-cpp-2/openmp"]
+llama-metal = ["dep:llama-cpp-2", "llama-cpp-2/metal"]
+llama-cuda = ["dep:llama-cpp-2", "llama-cpp-2/cuda"]
+llama-vulkan = ["dep:llama-cpp-2", "llama-cpp-2/vulkan"]
+# Use native TLS for corporate proxies
+native-tls = ["hf-hub/native-tls", "ureq/native-tls"]
+
+[[bin]]
+name = "clai"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "env"] }
+dirs = "6"
+dunce = "1"
+figment = { version = "0.10", features = ["toml", "env"] }
+indicatif = "0.17"
+inquire = "0.7"
+os_info = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ureq = { version = "2", default-features = false, features = ["json", "rustls"] }
+hf-hub = { version = "0.4.3", default-features = false, features = ["ureq", "rustls-tls"] }
+self_update = { version = "0.42", default-features = false, features = [
+    "archive-tar",
+    "compression-flate2",
+    "rustls",
+] }
+which-shell = "0.1"
+sha2 = "0.10"
+hex = "0.4"
+wait-timeout = "0.2"
+libc = "0.2"
+
+llama-cpp-2 = { version = "0.1.145", optional = true, default-features = false, features = ["sampler"] }
+encoding_rs = "0.8"
+
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
