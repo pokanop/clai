@@ -116,17 +116,31 @@ pub fn complete_local(
         .apply_chat_template_oaicompat(&tmpl, &params)
         .map_err(|e| format!("template: {:?}", e))?;
 
-    let grammar_text: Option<String> = if let Some(ref g) = rendered.grammar {
-        Some(g.clone())
+    // GBNF + llama.cpp's grammar sampler can abort (GGML_ASSERT in llama-grammar.cpp) on some
+    // models/builds. Default is off; output is still steered by json_schema in the chat template
+    // and validated after generation. Opt in: CLAI_JSON_SCHEMA_GRAMMAR=1
+    let use_schema_grammar = std::env::var("CLAI_JSON_SCHEMA_GRAMMAR").ok().is_some_and(|v| {
+        matches!(v.as_str(), "1" | "true" | "yes")
+    });
+
+    let grammar_text: Option<String> = if use_schema_grammar {
+        json_schema_to_grammar(schema_str)
+            .ok()
+            .or_else(|| rendered.grammar.clone())
     } else {
-        json_schema_to_grammar(schema_str).ok()
+        None
     };
+
+    // Lazy grammar + triggers (only if CLAI_JSON_SCHEMA_GRAMMAR=1): enable with CLAI_GRAMMAR_LAZY=1.
+    let lazy_ok = std::env::var("CLAI_GRAMMAR_LAZY").ok().is_some_and(|v| {
+        matches!(v.as_str(), "1" | "true" | "yes")
+    }) && rendered.grammar_lazy;
 
     let mut sampler = if let Some(ref gtext) = grammar_text {
         grammar_sampler_for_result(
             &model,
             gtext,
-            rendered.grammar_lazy,
+            lazy_ok,
             &rendered.grammar_triggers,
         )?
     } else {

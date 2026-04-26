@@ -9,7 +9,8 @@ use tracing_subscriber::EnvFilter;
 use clai::app_update;
 use clai::cloud;
 use clai::config::{
-    self, default_config_path, default_models_dir, default_registry_cache_path, AppConfig,
+    self, default_config_path, default_data_dir, default_models_dir, default_registry_cache_path,
+    installed_model_path, resolve_registry_cache_path_for_read, AppConfig,
 };
 use clai::engine;
 use clai::executor;
@@ -206,7 +207,7 @@ fn cmd_doctor(config_path: Option<PathBuf>, model_override: Option<PathBuf>) -> 
     let host = HostContext::gather(None, None);
     println!("Host:\n{}", host.to_prompt_json());
 
-    let reg = registry::ModelRegistry::load_merged(&default_registry_cache_path())?;
+    let reg = registry::ModelRegistry::load_merged(&resolve_registry_cache_path_for_read())?;
     println!("registry_version: {}", reg.registry_version);
 
     let cfg = config::load_config_raw(config_path.clone()).unwrap_or_default();
@@ -217,6 +218,7 @@ fn cmd_doctor(config_path: Option<PathBuf>, model_override: Option<PathBuf>) -> 
         cfg.execution.mode, cfg.execution.docker_image
     );
 
+    println!("data_dir: {}", default_data_dir().display());
     match resolve_model_path(&cfg, model_override, &reg) {
         Ok(p) => println!("model_path: {}", p.display()),
         Err(e) => println!("model_path: (unset) — {e:?}"),
@@ -224,6 +226,10 @@ fn cmd_doctor(config_path: Option<PathBuf>, model_override: Option<PathBuf>) -> 
     println!(
         "CLAI_N_GPU_LAYERS: {:?}",
         std::env::var("CLAI_N_GPU_LAYERS").ok()
+    );
+    println!(
+        "CLAI_JSON_SCHEMA_GRAMMAR: {:?} (GBNF sampler; default off — llama.cpp may abort if on)",
+        std::env::var("CLAI_JSON_SCHEMA_GRAMMAR").ok()
     );
     #[cfg(feature = "llama")]
     println!("build: llama (embedded llama.cpp enabled)");
@@ -241,7 +247,7 @@ fn cmd_ask(
     use_cloud: bool,
 ) -> Result<()> {
     let cfg = load_cfg(config_path.clone())?;
-    let reg = ModelRegistry::load_merged(&default_registry_cache_path())?;
+    let reg = ModelRegistry::load_merged(&resolve_registry_cache_path_for_read())?;
     let host = HostContext::gather(
         cfg.preferred_shell.as_deref(),
         cfg.execution_profile.as_deref(),
@@ -296,6 +302,11 @@ fn cmd_ask(
         ));
     }
 
+    if print_only {
+        println!("(print-only; not executed)");
+        return Ok(());
+    }
+
     if decision.requires_confirmation && !yes {
         let ok = inquire::Confirm::new("This command is sensitive or destructive. Run it?")
             .with_default(false)
@@ -307,7 +318,7 @@ fn cmd_ask(
         }
     }
 
-    if print_only || (cfg.policy.dry_run_default && !yes) {
+    if cfg.policy.dry_run_default && !yes {
         println!("(dry-run; not executed)");
         return Ok(());
     }
@@ -326,41 +337,39 @@ fn cmd_ask(
 }
 
 fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
-    let cache = default_registry_cache_path();
+    let cache_read = resolve_registry_cache_path_for_read();
+    let cache_write = default_registry_cache_path();
     match m {
         ModelsCmd::List => {
-            let reg = ModelRegistry::load_merged(&cache)?;
+            let reg = ModelRegistry::load_merged(&cache_read)?;
             let cfg = config::load_config_raw(config_path.clone()).unwrap_or_default();
-            let models_dir = default_models_dir();
             for m in &reg.models {
-                let p = models_dir.join(&m.filename);
                 let mark = cfg
                     .default_model_id
                     .as_deref()
                     .map(|d| d == m.id)
                     .unwrap_or(false);
+                let loc = installed_model_path(&m.filename)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(not downloaded)".into());
                 println!(
                     "{}{} — {} [{}] {}",
                     if mark { "* " } else { "  " },
                     m.id,
                     m.display_name,
                     m.profile,
-                    if p.exists() {
-                        p.display().to_string()
-                    } else {
-                        "(not downloaded)".into()
-                    }
+                    loc
                 );
             }
         }
         ModelsCmd::Search { query } => {
-            let reg = ModelRegistry::load_merged(&cache)?;
+            let reg = ModelRegistry::load_merged(&cache_read)?;
             for m in reg.search(&query) {
                 println!("{} — {}", m.id, m.display_name);
             }
         }
         ModelsCmd::Pull { id, verify } => {
-            let reg = ModelRegistry::load_merged(&cache)?;
+            let reg = ModelRegistry::load_merged(&cache_read)?;
             let m = reg
                 .find(&id)
                 .ok_or_else(|| clai::AppError::Msg(format!("unknown model {}", id)))?;
@@ -377,14 +386,14 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
             }
         }
         ModelsCmd::Rm { id } => {
-            let reg = ModelRegistry::load_merged(&cache)?;
+            let reg = ModelRegistry::load_merged(&cache_read)?;
             let m = reg
                 .find(&id)
                 .ok_or_else(|| clai::AppError::Msg(format!("unknown model {}", id)))?;
-            let p = default_models_dir().join(&m.filename);
-            if p.exists() {
-                std::fs::remove_file(&p)?;
-            }
+            let p = installed_model_path(&m.filename).ok_or_else(|| {
+                clai::AppError::Msg(format!("model file not present: {}", id))
+            })?;
+            std::fs::remove_file(&p)?;
             println!("removed {}", p.display());
         }
         ModelsCmd::UpdateRegistry { url } => {
@@ -400,10 +409,10 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
                 .into_string()
                 .map_err(|e| clai::AppError::Msg(e.to_string()))?;
             let reg: ModelRegistry = serde_json::from_str(&body)?;
-            registry::write_registry_cache(&cache, &reg)?;
+            registry::write_registry_cache(&cache_write, &reg)?;
             println!(
                 "wrote {} (version {})",
-                cache.display(),
+                cache_write.display(),
                 reg.registry_version
             );
         }

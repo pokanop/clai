@@ -9,7 +9,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::config::default_models_dir;
+use crate::config::{default_models_dir, installed_model_path};
 use crate::error::{AppError, Result};
 
 pub const EMBEDDED_REGISTRY: &str = include_str!("../assets/registry.json");
@@ -152,7 +152,13 @@ pub fn default_model_path_for(id: &str, registry: &ModelRegistry) -> Result<Path
     let m = registry
         .find(id)
         .ok_or_else(|| AppError::Msg(format!("unknown model id {}", id)))?;
-    Ok(default_models_dir().join(&m.filename))
+    installed_model_path(&m.filename).ok_or_else(|| {
+        AppError::Msg(format!(
+            "model file not found; run: clai models pull {} (installs to {})",
+            id,
+            default_models_dir().join(&m.filename).display()
+        ))
+    })
 }
 
 pub fn write_registry_cache(path: &Path, reg: &ModelRegistry) -> Result<()> {
