@@ -11,9 +11,9 @@ use clai::app_update;
 use clai::ask_exit::{CLAI_ASK_DRY_RUN_EXIT, CLAI_ASK_USER_DECLINED_EXIT};
 use clai::cli_output::{
     cli_intro, cli_note, cli_section, eprint_captured_stream_encoding_note, print_doctor_report,
-    print_init_done, print_models_default_set, print_models_list, print_models_pull_done,
-    print_models_registry_updated, print_models_rm, print_models_search, print_pre_run,
-    print_proposal_json, print_run_hint, print_verbose_run_report, ModelCatalogRow,
+    print_init_done, print_models_default_set, print_models_list, print_models_ollama,
+    print_models_pull_done, print_models_registry_updated, print_models_rm, print_models_search,
+    print_pre_run, print_proposal_json, print_run_hint, print_verbose_run_report, ModelCatalogRow,
 };
 use clai::cloud;
 use clai::config::{
@@ -27,6 +27,7 @@ use clai::interactive_mode::{
     resolve_effective_interactive_execution_mode, InteractiveExecutionMode,
 };
 use clai::migrate;
+use clai::ollama;
 use clai::policy::PolicyEngine;
 use clai::registry::{self, ModelRegistry};
 use clai::schema::CommandProposal;
@@ -150,6 +151,7 @@ enum Commands {
         #[arg(long, help = "Use cloud OpenAI-compatible API from config")]
         cloud: bool,
     },
+    /// List, search, pull, and manage GGUF models (catalog + optional Ollama discovery).
     #[command(subcommand)]
     Models(ModelsCmd),
     #[command(name = "self", subcommand)]
@@ -160,7 +162,14 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum ModelsCmd {
-    List,
+    List {
+        #[arg(
+            short,
+            long,
+            help = "Show Hugging Face repo and GGUF filename for each entry"
+        )]
+        verbose: bool,
+    },
     Search {
         query: String,
     },
@@ -181,6 +190,15 @@ enum ModelsCmd {
     UpdateRegistry {
         #[arg(long, help = "URL to registry.json")]
         url: Option<String>,
+    },
+    /// List tags from a local `ollama serve` (discovery only; clai still loads GGUF itself).
+    Ollama {
+        #[arg(
+            long,
+            env = "CLAI_OLLAMA_HOST",
+            help = "Ollama HTTP API base, e.g. http://127.0.0.1:11434"
+        )]
+        host: Option<String>,
     },
 }
 
@@ -276,9 +294,15 @@ fn cmd_default_entry(cli: Cli) -> Result<()> {
     cmd_interactive(cli)
 }
 
+fn merged_registry(config_path: Option<PathBuf>) -> Result<ModelRegistry> {
+    let cache = resolve_registry_cache_path_for_read();
+    let cfg = config::load_config_raw(config_path)?;
+    ModelRegistry::load_merged_with_config(&cache, &cfg.models.extra)
+}
+
 fn cmd_interactive(cli: Cli) -> Result<()> {
     let cfg = load_cfg(cli.config.clone())?;
-    let reg = ModelRegistry::load_merged(&resolve_registry_cache_path_for_read())?;
+    let reg = merged_registry(cli.config.clone())?;
     let host = HostContext::gather(
         cfg.preferred_shell.as_deref(),
         cfg.execution_profile.as_deref(),
@@ -310,17 +334,47 @@ fn load_cfg(path: Option<PathBuf>) -> Result<AppConfig> {
     })
 }
 
-fn cmd_init(config_path: Option<PathBuf>) -> Result<()> {
-    let profile = inquire::Select::new("Model profile", vec!["fast", "balanced", "capable"])
-        .prompt()
-        .map_err(|e| clai::AppError::Msg(e.to_string()))?;
+fn profile_rank(profile: &str) -> u8 {
+    match profile {
+        "fast" => 0,
+        "balanced" => 1,
+        "capable" => 2,
+        _ => 3,
+    }
+}
 
-    let id = match profile {
-        "fast" => "fast-qwen25-coder-3b-q4",
-        "balanced" => "balanced-qwen25-coder-7b-q4",
-        "capable" => "capable-qwen25-coder-14b-q4",
-        _ => "balanced-qwen25-coder-7b-q4",
-    };
+fn cmd_init(config_path: Option<PathBuf>) -> Result<()> {
+    let reg = merged_registry(config_path.clone())?;
+    let mut models = reg.models.clone();
+    models.sort_by(|a, b| {
+        profile_rank(&a.profile)
+            .cmp(&profile_rank(&b.profile))
+            .then_with(|| {
+                a.display_name
+                    .to_lowercase()
+                    .cmp(&b.display_name.to_lowercase())
+            })
+    });
+    let picked = inquire::Select::new(
+        "Default local GGUF model (catalog + optional [[models.extra]] in config)",
+        models,
+    )
+    .with_formatter(&|opt| {
+        let r = opt.value;
+        let ram = r
+            .ram_hint_gb
+            .map(|g| format!("~{g} GB RAM"))
+            .unwrap_or_else(|| "RAM ?".into());
+        format!(
+            "{:<40}  {:<10}  {}",
+            r.display_name.as_str(),
+            r.profile.as_str(),
+            ram
+        )
+    })
+    .prompt()
+    .map_err(|e| clai::AppError::Msg(e.to_string()))?;
+    let id = picked.id;
 
     let strict = inquire::Confirm::new("Enable dry-run by default for new commands?")
         .with_default(true)
@@ -328,7 +382,7 @@ fn cmd_init(config_path: Option<PathBuf>) -> Result<()> {
         .map_err(|e| clai::AppError::Msg(e.to_string()))?;
 
     let c = AppConfig {
-        default_model_id: Some(id.into()),
+        default_model_id: Some(id.clone()),
         policy: clai::config::PolicyConfig {
             dry_run_default: strict,
             ..Default::default()
@@ -341,12 +395,12 @@ fn cmd_init(config_path: Option<PathBuf>) -> Result<()> {
         .display()
         .to_string();
     c.save(config_path)?;
-    print_init_done(&written, id);
+    print_init_done(&written, id.as_str());
     Ok(())
 }
 
 fn cmd_doctor(config_path: Option<PathBuf>, model_override: Option<PathBuf>) -> Result<()> {
-    let reg = registry::ModelRegistry::load_merged(&resolve_registry_cache_path_for_read())?;
+    let reg = merged_registry(config_path.clone())?;
     let cfg = config::load_config_raw(config_path.clone()).unwrap_or_default();
     let host = HostContext::gather(
         cfg.preferred_shell.as_deref(),
@@ -393,7 +447,7 @@ fn cmd_ask(
     use_cloud: bool,
 ) -> Result<()> {
     let cfg = load_cfg(config_path.clone())?;
-    let reg = ModelRegistry::load_merged(&resolve_registry_cache_path_for_read())?;
+    let reg = merged_registry(config_path.clone())?;
     let host = HostContext::gather(
         cfg.preferred_shell.as_deref(),
         cfg.execution_profile.as_deref(),
@@ -756,11 +810,10 @@ mod non_direct_context_tests {
 }
 
 fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
-    let cache_read = resolve_registry_cache_path_for_read();
     let cache_write = default_registry_cache_path();
     match m {
-        ModelsCmd::List => {
-            let reg = ModelRegistry::load_merged(&cache_read)?;
+        ModelsCmd::List { verbose } => {
+            let reg = merged_registry(config_path.clone())?;
             let cfg = config::load_config_raw(config_path.clone()).unwrap_or_default();
             let rows: Vec<ModelCatalogRow> = reg
                 .models
@@ -780,13 +833,16 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
                         profile: m.profile.clone(),
                         location,
                         is_default,
+                        hf_repo: m.hf_repo.clone(),
+                        filename: m.filename.clone(),
+                        ram_hint_gb: m.ram_hint_gb,
                     }
                 })
                 .collect();
-            print_models_list(&rows);
+            print_models_list(&rows, verbose);
         }
         ModelsCmd::Search { query } => {
-            let reg = ModelRegistry::load_merged(&cache_read)?;
+            let reg = merged_registry(config_path.clone())?;
             let hits: Vec<(&str, &str)> = reg
                 .search(&query)
                 .into_iter()
@@ -795,7 +851,7 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
             print_models_search(&query, &hits);
         }
         ModelsCmd::Pull { id, verify } => {
-            let reg = ModelRegistry::load_merged(&cache_read)?;
+            let reg = merged_registry(config_path.clone())?;
             let m = reg
                 .find(&id)
                 .ok_or_else(|| clai::AppError::Msg(format!("unknown model {}", id)))?;
@@ -806,6 +862,12 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
             let mut cfg = load_cfg(config_path.clone()).unwrap_or_default();
             match action {
                 DefaultModelCmd::Set { id } => {
+                    let reg = merged_registry(config_path.clone())?;
+                    reg.find(&id).ok_or_else(|| {
+                        clai::AppError::Msg(format!(
+                            "unknown model id `{id}` — run `clai models list` or add [[models.extra]]"
+                        ))
+                    })?;
                     cfg.default_model_id = Some(id.clone());
                     cfg.save(config_path.clone())?;
                     let written = config_path
@@ -818,7 +880,7 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
             }
         }
         ModelsCmd::Rm { id } => {
-            let reg = ModelRegistry::load_merged(&cache_read)?;
+            let reg = merged_registry(config_path.clone())?;
             let m = reg
                 .find(&id)
                 .ok_or_else(|| clai::AppError::Msg(format!("unknown model {}", id)))?;
@@ -843,6 +905,11 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
             let reg: ModelRegistry = serde_json::from_str(&body)?;
             registry::write_registry_cache(&cache_write, &reg)?;
             print_models_registry_updated(&cache_write.display().to_string(), reg.registry_version);
+        }
+        ModelsCmd::Ollama { host } => {
+            let base = host.unwrap_or_else(|| "http://127.0.0.1:11434".into());
+            let rows = ollama::list_local_tags(&base)?;
+            print_models_ollama(&base, &rows);
         }
     }
     Ok(())

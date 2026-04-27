@@ -2,6 +2,33 @@
   "registry_version": 1,
   "models": [
     {
+      "id": "fast-gemma2-2b-q4",
+      "display_name": "Gemma 2 2B IT (Q4_K_M)",
+      "profile": "fast",
+      "hf_repo": "bartowski/gemma-2-2b-it-GGUF",
+      "filename": "gemma-2-2b-it-Q4_K_M.gguf",
+      "sha256": null,
+      "ram_hint_gb": 4
+    },
+    {
+      "id": "fast-llama32-3b-q4",
+      "display_name": "Llama 3.2 3B Instruct (Q4_K_M)",
+      "profile": "fast",
+      "hf_repo": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+      "filename": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+      "sha256": null,
+      "ram_hint_gb": 5
+    },
+    {
+      "id": "fast-phi35-mini-q4",
+      "display_name": "Phi 3.5 Mini Instruct (Q4_K_M)",
+      "profile": "fast",
+      "hf_repo": "bartowski/phi-3.5-mini-instruct-GGUF",
+      "filename": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+      "sha256": null,
+      "ram_hint_gb": 5
+    },
+    {
       "id": "fast-qwen25-coder-3b-q4",
       "display_name": "Qwen2.5 Coder 3B Instruct (Q4_K_M)",
       "profile": "fast",
@@ -9,6 +36,24 @@
       "filename": "Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
       "sha256": null,
       "ram_hint_gb": 6
+    },
+    {
+      "id": "balanced-llama31-8b-q4",
+      "display_name": "Llama 3.1 8B Instruct (Q4_K_M)",
+      "profile": "balanced",
+      "hf_repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+      "filename": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "sha256": null,
+      "ram_hint_gb": 11
+    },
+    {
+      "id": "balanced-mistral7-v03-q4",
+      "display_name": "Mistral 7B Instruct v0.3 (Q4_K_M)",
+      "profile": "balanced",
+      "hf_repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+      "filename": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
+      "sha256": null,
+      "ram_hint_gb": 10
     },
     {
       "id": "balanced-qwen25-coder-7b-q4",
@@ -20,6 +65,15 @@
       "ram_hint_gb": 10
     },
     {
+      "id": "capable-deepseek-coder-v2-lite-q4",
+      "display_name": "DeepSeek Coder V2 Lite Instruct (Q4_K_M)",
+      "profile": "capable",
+      "hf_repo": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+      "filename": "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
+      "sha256": null,
+      "ram_hint_gb": 14
+    },
+    {
       "id": "capable-qwen25-coder-14b-q4",
       "display_name": "Qwen2.5 Coder 14B Instruct (Q4_K_M)",
       "profile": "capable",
@@ -27,6 +81,15 @@
       "filename": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
       "sha256": null,
       "ram_hint_gb": 18
+    },
+    {
+      "id": "capable-qwen25-coder-32b-q4",
+      "display_name": "Qwen2.5 Coder 32B Instruct (Q4_K_M)",
+      "profile": "capable",
+      "hf_repo": "bartowski/Qwen2.5-Coder-32B-Instruct-GGUF",
+      "filename": "Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf",
+      "sha256": null,
+      "ram_hint_gb": 24
     }
   ]
 }

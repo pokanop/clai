@@ -78,6 +78,30 @@ pub struct AppConfig {
     /// Default interactive session execution behavior (overridable by env / CLI; see README).
     #[serde(default)]
     pub interactive: InteractiveSection,
+
+    /// Extra Hugging Face GGUF catalog entries (merged with the built-in and cached registry).
+    #[serde(default)]
+    pub models: ModelsSection,
+}
+
+/// Optional Hugging Face GGUF entry; same fields as `registry.json` model objects.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtraModelEntry {
+    pub id: String,
+    pub display_name: String,
+    pub profile: String,
+    pub hf_repo: String,
+    pub filename: String,
+    #[serde(default)]
+    pub sha256: Option<String>,
+    #[serde(default)]
+    pub ram_hint_gb: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModelsSection {
+    #[serde(default)]
+    pub extra: Vec<ExtraModelEntry>,
 }
 
 /// Config table `[interactive]` / env `CLAI_INTERACTIVE__EXECUTION`.
@@ -152,6 +176,7 @@ impl Default for AppConfig {
             ask_force_capture: false,
             ask_no_preview: false,
             interactive: InteractiveSection::default(),
+            models: ModelsSection::default(),
         }
     }
 }

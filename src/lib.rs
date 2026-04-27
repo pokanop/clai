@@ -11,6 +11,7 @@ pub mod executor;
 pub mod host_context;
 pub mod interactive_mode;
 pub mod migrate;
+pub mod ollama;
 pub mod policy;
 pub mod presentation;
 pub mod registry;

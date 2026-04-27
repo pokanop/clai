@@ -1,5 +1,6 @@
 //! Model registry: embedded defaults + cached updates.
 
+use std::fmt;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -32,6 +33,12 @@ pub struct RegistryModel {
     pub sha256: Option<String>,
     #[serde(default)]
     pub ram_hint_gb: Option<u32>,
+}
+
+impl fmt::Display for RegistryModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} — {}", self.id, self.display_name)
+    }
 }
 
 impl ModelRegistry {
@@ -67,6 +74,36 @@ impl ModelRegistry {
             }
         }
         Ok(base)
+    }
+
+    /// Built-in + optional `registry.json` cache + `config.toml` \[\[models.extra\]\] entries.
+    pub fn load_merged_with_config(
+        cache_path: &Path,
+        extras: &[crate::config::ExtraModelEntry],
+    ) -> Result<Self> {
+        let mut reg = Self::load_merged(cache_path)?;
+        reg.merge_extras(extras);
+        Ok(reg)
+    }
+
+    /// Append or override models from config (same rules as cache merge: last wins by id).
+    pub fn merge_extras(&mut self, extras: &[crate::config::ExtraModelEntry]) {
+        for e in extras {
+            let m = RegistryModel {
+                id: e.id.clone(),
+                display_name: e.display_name.clone(),
+                profile: e.profile.clone(),
+                hf_repo: e.hf_repo.clone(),
+                filename: e.filename.clone(),
+                sha256: e.sha256.clone(),
+                ram_hint_gb: e.ram_hint_gb,
+            };
+            if let Some(idx) = self.models.iter().position(|x| x.id == m.id) {
+                self.models[idx] = m;
+            } else {
+                self.models.push(m);
+            }
+        }
     }
 
     pub fn find(&self, id: &str) -> Option<&RegistryModel> {
@@ -185,5 +222,34 @@ mod tests {
         let r = ModelRegistry::embedded().unwrap();
         let hits = r.search("qwen 7b");
         assert!(!hits.is_empty());
+    }
+
+    #[test]
+    fn merge_extras_overrides_by_id() {
+        let mut r = ModelRegistry::embedded().unwrap();
+        let n0 = r.models.len();
+        r.merge_extras(&[crate::config::ExtraModelEntry {
+            id: "custom-test-model".into(),
+            display_name: "Custom".into(),
+            profile: "custom".into(),
+            hf_repo: "org/repo".into(),
+            filename: "x.gguf".into(),
+            sha256: None,
+            ram_hint_gb: Some(1),
+        }]);
+        assert_eq!(r.models.len(), n0 + 1);
+        r.merge_extras(&[crate::config::ExtraModelEntry {
+            id: "custom-test-model".into(),
+            display_name: "Custom v2".into(),
+            profile: "custom".into(),
+            hf_repo: "org/repo2".into(),
+            filename: "y.gguf".into(),
+            sha256: None,
+            ram_hint_gb: Some(2),
+        }]);
+        assert_eq!(r.models.len(), n0 + 1);
+        let m = r.find("custom-test-model").unwrap();
+        assert_eq!(m.display_name, "Custom v2");
+        assert_eq!(m.filename, "y.gguf");
     }
 }
