@@ -4,7 +4,7 @@
 mod llama;
 
 #[cfg(feature = "llama")]
-pub use llama::complete_local;
+pub use llama::{complete_local, LocalLlamaSession};
 
 use crate::error::{AppError, Result};
 

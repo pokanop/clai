@@ -20,6 +20,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev
         if: runner.os == 'Linux'
+      - run: cargo fmt --check
       - run: cargo test --no-default-features --locked
       - run: cargo clippy --no-default-features --locked -- -D warnings
 

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added (interactive mode)
+
+- **Default TTY entrypoint:** `clai` with no subcommand (or `clai interactive`) starts an interactive line loop when stdin **and** stdout are TTYs; non-TTY invocations exit **2** with a hint to use `clai ask`.
+- **Warm local load:** `LocalLlamaSession` keeps one `LlamaBackend` + `LlamaModel` per process for the session; `complete_local` remains a one-shot load for `clai ask`.
+- **Tri-state execution:** `dry-run` / `confirm` / `auto` via `[interactive].execution`, `CLAI_INTERACTIVE__EXECUTION`, `--interactive-mode`, and `--yes` (forces auto + policy auto-confirm). Precedence: CLI `--yes` > `--interactive-mode` > env/config field > legacy `policy.dry_run_default` when the new key is absent.
+- **Pre-run presentation** module and **TTY** severity helpers (`NO_COLOR` respected).
+- **`clai ask --verbose` on a TTY** prints the same structured pre-run block as the interactive session after policy evaluation.
+- **Tests:** unit coverage for mode resolution, presentation, FR-16 helpers, built-ins, `NO_COLOR`; integration `tests/non_tty_default_invocation.rs`.
+- **CI:** `cargo fmt --check` on pull requests and main.
+
 ### Added (Phase 2)
 
 - **`clai ask --force-capture`:** In `execution.mode = direct`, force piped capture (size limits) even on a TTY, without changing policy. Config: `ask_force_capture` or `CLAI_ASK_FORCE_CAPTURE=1`.

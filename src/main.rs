@@ -18,8 +18,12 @@ use clai::config::{
 use clai::engine;
 use clai::executor;
 use clai::host_context::HostContext;
+use clai::interactive_mode::{
+    resolve_effective_interactive_execution_mode, InteractiveExecutionMode,
+};
 use clai::migrate;
 use clai::policy::PolicyEngine;
+use clai::presentation::format_pre_run_presentation;
 use clai::registry::{self, ModelRegistry};
 use clai::schema::CommandProposal;
 use clai::stream_strategy::{
@@ -28,8 +32,11 @@ use clai::stream_strategy::{
 use clai::Result;
 
 /// Natural-language → local command (embedded GGUF optional).
+///
+/// On a **TTY** (stdin and stdout), running `clai` with no subcommand starts the **interactive session**
+/// (same as `clai interactive`). For automation, use `clai ask '…'` or pass a subcommand explicitly.
 #[derive(Parser, Debug)]
-#[command(name = "clai", version, about)]
+#[command(name = "clai", version, about, subcommand_required = false)]
 struct Cli {
     #[arg(long, global = true, help = "Path to config.toml")]
     config: Option<PathBuf>,
@@ -37,17 +44,71 @@ struct Cli {
     #[arg(long, global = true, help = "Override model GGUF path")]
     model: Option<PathBuf>,
 
+    #[arg(
+        long = "interactive-mode",
+        global = true,
+        value_enum,
+        env = "CLAI_INTERACTIVE__EXECUTION",
+        help = "Default interactive session execution: dry-run | confirm | auto. Precedence: --yes > this flag > CLAI_INTERACTIVE__EXECUTION / [interactive] in config > legacy policy.dry_run_default mapping (see README)"
+    )]
+    interactive_mode: Option<InteractiveExecutionMode>,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Force automatic interactive execution (auto) and auto-confirm policy prompts. Applies to bare `clai` / `clai interactive` and to `clai ask` when placed before the subcommand (e.g. `clai --yes ask ...`)"
+    )]
+    yes: bool,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Use cloud completion if cloud.enabled (bare session and `clai --cloud ask`)"
+    )]
+    cloud: bool,
+
+    #[arg(
+        long,
+        short = 'v',
+        global = true,
+        env = "CLAI_ASK_VERBOSE",
+        help = "Verbose machine-oriented output for `clai ask` and the default interactive session"
+    )]
+    verbose: bool,
+
+    #[arg(
+        long = "force-capture",
+        global = true,
+        env = "CLAI_ASK_FORCE_CAPTURE",
+        help = "Force piped capture in direct mode (`ask` + interactive session)"
+    )]
+    force_capture: bool,
+
+    #[arg(
+        long = "no-preview",
+        global = true,
+        env = "CLAI_ASK_NO_PREVIEW",
+        help = "Omit one-line Run: preview (`ask` + interactive session)"
+    )]
+    no_preview: bool,
+
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Interactive natural-language session (same as bare `clai` on a TTY)
+    Interactive,
     /// First-run wizard
     Init,
     /// Show host, model, and backend diagnostics
     Doctor,
-    /// Ask in natural language; proposes and optionally runs a command
+    /// Ask in natural language; proposes and optionally runs a command.
+    ///
+    /// Global flags placed **before** `ask` also apply (e.g. `clai --yes ask …`, `clai -v ask …`,
+    /// `clai --cloud ask …`). See top-level `clai --help` for `--interactive-mode`, `--yes`, `--cloud`,
+    /// `--verbose`, `--force-capture`, and `--no-preview`.
     Ask {
         #[arg(trailing_var_arg = true, required = true)]
         words: Vec<String>,
@@ -165,9 +226,11 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Commands::Init => cmd_init(cli.config),
-        Commands::Doctor => cmd_doctor(cli.config, cli.model),
-        Commands::Ask {
+        None => cmd_default_entry(cli),
+        Some(Commands::Interactive) => cmd_default_entry(cli),
+        Some(Commands::Init) => cmd_init(cli.config),
+        Some(Commands::Doctor) => cmd_doctor(cli.config, cli.model),
+        Some(Commands::Ask {
             words,
             print_only,
             verbose,
@@ -175,21 +238,61 @@ fn run(cli: Cli) -> Result<()> {
             no_preview,
             yes,
             cloud,
-        } => cmd_ask(
+        }) => cmd_ask(
             cli.config,
             cli.model,
             words.join(" "),
             print_only,
-            verbose,
-            force_capture,
-            no_preview,
-            yes,
-            cloud,
+            verbose || cli.verbose,
+            force_capture || cli.force_capture,
+            no_preview || cli.no_preview,
+            yes || cli.yes,
+            cloud || cli.cloud,
         ),
-        Commands::Models(m) => cmd_models(cli.config, m),
-        Commands::Me(m) => cmd_me(m),
-        Commands::Migrate(m) => cmd_migrate(cli.config, m),
+        Some(Commands::Models(m)) => cmd_models(cli.config, m),
+        Some(Commands::Me(m)) => cmd_me(m),
+        Some(Commands::Migrate(m)) => cmd_migrate(cli.config, m),
     }
+}
+
+/// Exit code when stdin or stdout is not a TTY and the user invokes bare `clai` / `clai interactive`.
+const NON_TTY_DEFAULT_EXIT: i32 = 2;
+
+fn cmd_default_entry(cli: Cli) -> Result<()> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        eprintln!(
+            "clai: interactive session requires a TTY on both stdin and stdout. \
+             For scripts and CI, use: clai ask 'your request' …"
+        );
+        // Hint: render top-level help on stderr without clap's full formatter dependency.
+        eprintln!("Run `clai --help` for usage.");
+        std::process::exit(NON_TTY_DEFAULT_EXIT);
+    }
+    cmd_interactive(cli)
+}
+
+fn cmd_interactive(cli: Cli) -> Result<()> {
+    let cfg = load_cfg(cli.config.clone())?;
+    let reg = ModelRegistry::load_merged(&resolve_registry_cache_path_for_read())?;
+    let host = HostContext::gather(
+        cfg.preferred_shell.as_deref(),
+        cfg.execution_profile.as_deref(),
+    );
+    let system = build_system_prompt(&host);
+    clai::session::run_interactive_session(
+        cfg,
+        cli.model,
+        &reg,
+        resolve_model_path,
+        &host,
+        &system,
+        cli.interactive_mode,
+        cli.yes,
+        cli.cloud,
+        cli.verbose,
+        cli.force_capture,
+        cli.no_preview,
+    )
 }
 
 fn load_cfg(path: Option<PathBuf>) -> Result<AppConfig> {
@@ -247,6 +350,17 @@ fn cmd_doctor(config_path: Option<PathBuf>, model_override: Option<PathBuf>) -> 
     let cfg = config::load_config_raw(config_path.clone()).unwrap_or_default();
     println!("config_version: {}", cfg.config_version);
     println!("dry_run_default: {}", cfg.policy.dry_run_default);
+    let effective_interactive = resolve_effective_interactive_execution_mode(
+        cfg.interactive.execution,
+        None,
+        false,
+        cfg.policy.dry_run_default,
+    );
+    println!(
+        "interactive.execution (config+env; CLI not applied here): {}  (raw config key: {:?})",
+        effective_interactive.as_str(),
+        cfg.interactive.execution
+    );
     println!(
         "execution.mode: {:?} docker_image: {:?}",
         cfg.execution.mode, cfg.execution.docker_image
@@ -343,6 +457,9 @@ fn cmd_ask(
         cfg.policy.allowlist_bins.clone(),
     );
     let decision = policy.evaluate(&proposal);
+    if verbose_ask && io::stdout().is_terminal() {
+        println!("{}", format_pre_run_presentation(&proposal, &decision));
+    }
     if decision.blocked {
         return Err(clai::AppError::Msg(
             decision
@@ -748,7 +865,8 @@ fn build_system_prompt(host: &HostContext) -> String {
         "You output exactly one JSON object for running a CLI command. Schema:\n{}\n\
          Host: os={} arch={} cwd={} shell_family={:?} path_sep={}\n\
          Rules: use program + args (argv). No markdown. No prose outside JSON.\n\
-         If you refuse, use program \"echo\" and args [\"refused\"] and a reason field.",
+         Always populate \"reason\" with a concise explanation of WHY this argv fits the user request \
+         (what problem it solves / why it is appropriate). If you refuse, use program \"echo\" and args [\"refused\"] and a reason field.",
         CommandProposal::schema_json(),
         host.os,
         host.arch,

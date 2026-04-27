@@ -37,6 +37,35 @@ cargo run -- models pull balanced-qwen25-coder-7b-q4
 cargo run -- ask --print-only "list files in the current directory"
 ```
 
+### Interactive session (bare `clai` on a TTY)
+
+When **stdin and stdout** are both TTYs, `clai` with **no subcommand** (or `clai interactive`) runs a line-oriented session: each non-empty trimmed line is sent to the model like `clai ask` text. Empty lines are ignored. Built-ins: `help`, `exit` / `quit`, and `reload` (reloads the local GGUF from disk when using local inference and the `llama` build). **EOF** (Ctrl-D) ends the session with exit code **0**.
+
+If either stdin or stdout is **not** a TTY, bare `clai` / `clai interactive` **does not** wait for input: it prints a short hint to use `clai ask '…'` and exits with code **2** (so CI and scripts do not hang).
+
+**Execution tri-state** (how the session runs commands after policy allows them):
+
+| Mode | Behavior |
+| --- | --- |
+| `dry-run` | Show the structured pre-run summary; never execute. |
+| `confirm` | Show the summary, then prompt before run (default answer **no**). |
+| `auto` | Show the summary and run without the extra “run it?” step; **policy** may still require a sensitive-operation confirm unless you pass `--yes`. |
+
+**Precedence:** `--yes` (forces **auto** for the session and auto-confirms policy prompts) **>** `--interactive-mode` **>** `CLAI_INTERACTIVE__EXECUTION` / `[interactive]` in config (merged with other `CLAI_` env via figment) **>** legacy mapping from `policy.dry_run_default` when `[interactive].execution` is unset (`true` → `dry-run`, `false` → `confirm`).
+
+Config example:
+
+```toml
+[interactive]
+execution = "confirm"   # dry-run | confirm | auto
+```
+
+**Global flags** (see `clai --help`): `--interactive-mode`, `--yes`, `--cloud`, `--verbose` / `-v`, `--force-capture`, `--no-preview`. When placed **before** `ask`, they also apply to `clai ask` (e.g. `clai --yes ask "…"`). Subcommand-specific flags still work on `clai ask …`.
+
+**TTY styling:** informational / ok / warn / error lines use distinct labels and color when stdout/stderr is a TTY. Set `NO_COLOR` to disable ANSI color.
+
+**Ctrl+C:** documented as canceling the current request; use `exit` / EOF to leave the session.
+
 Paths (Unix, including macOS): config in `~/.config/clai/config.toml` (`$XDG_CONFIG_HOME/clai/` if set), data (models + `registry.json`) under `~/.local/share/clai/` (`$XDG_DATA_HOME/clai/` if set). Windows uses `%APPDATA%` for config and `%LOCALAPPDATA%\\clai` for data. Older macOS builds used `~/Library/Application Support/clai/`; that tree is still read when the XDG-style paths have no file yet. Overrides: `CLAI_*` env (figment).
 
 ### Inference (local)
