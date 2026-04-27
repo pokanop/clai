@@ -2,6 +2,8 @@
 
 use std::io::{self, IsTerminal};
 
+use console::Style;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Info,
@@ -20,19 +22,18 @@ pub fn use_color_for_stdout() -> bool {
     io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
 }
 
-/// Prefix + optional ANSI color for stderr (session diagnostics).
+/// Prefix + optional color for labeled lines.
 pub fn format_labeled_line(label: &str, message: &str, sev: Severity, color: bool) -> String {
-    let (open, close) = if color {
-        match sev {
-            Severity::Info => ("\x1b[36m", "\x1b[0m"),  // cyan
-            Severity::Ok => ("\x1b[32m", "\x1b[0m"),    // green
-            Severity::Warn => ("\x1b[33m", "\x1b[0m"),  // yellow
-            Severity::Error => ("\x1b[31m", "\x1b[0m"), // red
-        }
-    } else {
-        ("", "")
+    if !color {
+        return format!("{label}: {message}");
+    }
+    let styled = match sev {
+        Severity::Info => Style::new().cyan().apply_to(label),
+        Severity::Ok => Style::new().green().apply_to(label),
+        Severity::Warn => Style::new().yellow().apply_to(label),
+        Severity::Error => Style::new().red().apply_to(label),
     };
-    format!("{open}{label}:{close} {message}")
+    format!("{styled} {message}")
 }
 
 pub fn eprintln_labeled(label: &str, message: &str, sev: Severity) {

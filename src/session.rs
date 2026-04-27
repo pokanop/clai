@@ -1,19 +1,26 @@
 //! Interactive default-session loop (FR-3, FR-10, FR-11, FR-16, NFR-4).
 
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::cli_output::{
+    eprint_cloud_request_prelude, print_clai_prompt, print_dry_run_skip_note, print_pre_run,
+    print_run_hint, print_session_help_styled, print_session_start,
+};
+#[cfg(feature = "llama")]
+use crate::cli_output::{
+    eprint_model_stream_end, eprint_model_stream_piece, eprint_model_stream_prelude,
+};
 use crate::cloud;
 use crate::config::{AppConfig, ExecutionConfig, ExecutionMode};
 use crate::executor;
 use crate::host_context::HostContext;
 use crate::interactive_mode::{
-    interactive_dry_run_skips_policy_and_run_prompts, needs_interactive_run_prompt,
+    needs_dry_run_execute_prompt, needs_interactive_run_prompt,
     resolve_effective_interactive_execution_mode, InteractiveExecutionMode,
 };
 use crate::policy::PolicyEngine;
-use crate::presentation::format_pre_run_presentation;
 use crate::registry::ModelRegistry;
 use crate::schema::CommandProposal;
 use crate::stream_strategy::{
@@ -74,28 +81,20 @@ pub fn run_interactive_session(
     } else {
         "local"
     };
-    println_labeled(
-        "clai",
-        &format!(
-            "interactive session — source={source}  mode={}  (EOF or `exit` to quit; `help` for built-ins; Ctrl+C cancels the current request)",
-            effective.as_str()
-        ),
-        Severity::Info,
-    );
-
-    if use_cloud && cfg.cloud.enabled {
+    let model_line = if use_cloud && cfg.cloud.enabled {
         let mid = cfg
             .cloud
             .model
             .as_deref()
             .unwrap_or("(cloud.model not set)");
-        println!("model (cloud): {mid}");
+        format!("model (cloud): {mid}")
     } else {
         match resolve_model_path(&cfg, model_override.clone(), reg) {
-            Ok(p) => println!("model (local): {}", p.display()),
-            Err(e) => println!("model (local): (unresolved — {e:?})"),
+            Ok(p) => format!("model (local): {}", p.display()),
+            Err(e) => format!("model (local): (unresolved — {e:?})"),
         }
-    }
+    };
+    print_session_start(effective, source, &model_line);
 
     #[cfg(feature = "llama")]
     let mut local_session: Option<crate::engine::LocalLlamaSession> = None;
@@ -104,8 +103,7 @@ pub fn run_interactive_session(
     let mut line = String::new();
     loop {
         line.clear();
-        print!("clai> ");
-        io::stdout().flush().ok();
+        print_clai_prompt();
         let n = match stdin.read_line(&mut line) {
             Ok(n) => n,
             Err(e) => {
@@ -130,7 +128,7 @@ pub fn run_interactive_session(
                     return Ok(());
                 }
                 SessionBuiltin::Help => {
-                    print_session_help(effective);
+                    print_session_help_styled(effective);
                     continue;
                 }
                 SessionBuiltin::Reload => {
@@ -208,7 +206,13 @@ pub fn run_interactive_session(
             trimmed
         );
 
+        let no_stream = std::env::var("CLAI_NO_STREAM")
+            .ok()
+            .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
         let raw: String = if use_cloud && cfg.cloud.enabled {
+            if !no_stream {
+                eprint_cloud_request_prelude();
+            }
             let base = cfg
                 .cloud
                 .base_url
@@ -252,14 +256,23 @@ pub fn run_interactive_session(
                         continue;
                     }
                 };
+                let stream = !no_stream;
+                if stream {
+                    eprint_model_stream_prelude();
+                }
+                let on_token = |piece: &str| {
+                    if stream {
+                        eprint_model_stream_piece(piece);
+                    }
+                };
                 let out: Result<String> = match local_session.as_mut() {
                     Some(ls) => ls
-                        .complete(system_prompt, &user, 256)
+                        .complete(system_prompt, &user, 256, on_token)
                         .map_err(crate::AppError::Msg),
                     None => match crate::engine::LocalLlamaSession::open(&path) {
                         Ok(mut ls) => {
                             let r = ls
-                                .complete(system_prompt, &user, 256)
+                                .complete(system_prompt, &user, 256, on_token)
                                 .map_err(crate::AppError::Msg);
                             local_session = Some(ls);
                             r
@@ -267,6 +280,9 @@ pub fn run_interactive_session(
                         Err(e) => Err(crate::AppError::Msg(e)),
                     },
                 };
+                if stream {
+                    eprint_model_stream_end();
+                }
                 match out {
                     Ok(s) => s,
                     Err(e) => {
@@ -314,20 +330,27 @@ pub fn run_interactive_session(
         );
         let decision = policy.evaluate(&proposal);
 
-        println!("{}", format_pre_run_presentation(&proposal, &decision));
+        print_pre_run(&proposal, &decision);
 
         if decision.blocked {
             continue;
         }
 
-        // FR-16: dry-run skips (2)-(4).
-        if interactive_dry_run_skips_policy_and_run_prompts(effective) {
-            println_labeled(
-                "clai",
-                "(dry-run interactive mode; not executed)",
-                Severity::Info,
-            );
-            continue;
+        if needs_dry_run_execute_prompt(effective, global_yes) {
+            let ok = match inquire::Confirm::new("Dry-run mode: execute this command?")
+                .with_default(false)
+                .prompt()
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln_labeled("error", &format!("prompt failed: {e}"), Severity::Error);
+                    continue;
+                }
+            };
+            if !ok {
+                print_dry_run_skip_note();
+                continue;
+            }
         }
 
         if decision.requires_confirmation && !global_yes {
@@ -387,12 +410,12 @@ pub fn run_interactive_session(
 
         if !verbose_ask && !no_preview && io::stdout().is_terminal() {
             if let Some(line) = non_direct_context_one_line(&proposal, &cfg.execution)? {
-                println!("{line}");
+                print_run_hint(&line);
             } else {
-                println!(
+                print_run_hint(&format!(
                     "Run: {}",
                     crate::presentation::command_line_for_display(&proposal)
-                );
+                ));
             }
         }
 
@@ -454,28 +477,6 @@ pub fn run_interactive_session(
             println_labeled("ok", "command finished.", Severity::Ok);
         }
     }
-}
-
-fn print_session_help(effective: InteractiveExecutionMode) {
-    println!(
-        "\
-Built-ins:
-  help          Show this help
-  exit, quit    End the session
-  reload        Reload local GGUF from disk (local sessions only; `llama` feature)
-
-Execution modes (effective this session: {}):
-  dry-run       Never run approved commands (config/CLI/env; see README)
-  confirm       Prompt before each run (default when not legacy dry-run mapped)
-  auto          Run after presentation (still honors sensitive policy confirm unless --yes)
-
-Overrides: CLI > env > config > built-in default. Env: CLAI_INTERACTIVE__EXECUTION=dry-run|confirm|auto
-Global flags: --interactive-mode, --yes (forces auto + policy auto-confirm), --cloud
-
-Ctrl+C: cancels the current request; use exit/quit or EOF to leave the session.
-",
-        effective.as_str()
-    );
 }
 
 fn effective_proposal_cwd(proposal: &CommandProposal) -> std::io::Result<PathBuf> {

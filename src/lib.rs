@@ -2,6 +2,7 @@
 
 pub mod app_update;
 pub mod ask_exit;
+pub mod cli_output;
 pub mod cloud;
 pub mod config;
 pub mod engine;

@@ -227,6 +227,7 @@ name = "clai"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "console",
  "dirs",
  "dunce",
  "encoding_rs",
