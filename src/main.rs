@@ -9,7 +9,13 @@ use tracing_subscriber::EnvFilter;
 
 use clai::app_update;
 use clai::ask_exit::{CLAI_ASK_DRY_RUN_EXIT, CLAI_ASK_USER_DECLINED_EXIT};
-use clai::cli_output::{print_pre_run, print_run_hint};
+use clai::cli_output::{
+    cli_intro, cli_note, cli_section, eprint_captured_stream_encoding_note, print_doctor_report,
+    print_init_done, print_models_default_set, print_models_list, print_models_pull_done,
+    print_models_registry_updated, print_models_rm, print_models_search, print_pre_run,
+    print_proposal_json, print_run_hint, print_verbose_run_report, ModelCatalogRow,
+};
+use clai::tty::{eprintln_labeled, println_labeled, Severity};
 use clai::cloud;
 use clai::config::{
     self, default_config_path, default_data_dir, default_models_dir, default_registry_cache_path,
@@ -218,7 +224,7 @@ fn main() {
 
     let cli = Cli::parse();
     if let Err(e) = run(cli) {
-        eprintln!("Error: {e:?}");
+        eprintln_labeled("error", &e.to_string(), Severity::Error);
         std::process::exit(1);
     }
 }
@@ -259,12 +265,12 @@ const NON_TTY_DEFAULT_EXIT: i32 = 2;
 
 fn cmd_default_entry(cli: Cli) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        eprintln!(
-            "clai: interactive session requires a TTY on both stdin and stdout. \
-             For scripts and CI, use: clai ask 'your request' …"
+        eprintln_labeled(
+            "clai",
+            "interactive mode needs a terminal on stdin and stdout. For scripts, use: clai ask '…'",
+            Severity::Warn,
         );
-        // Hint: render top-level help on stderr without clap's full formatter dependency.
-        eprintln!("Run `clai --help` for usage.");
+        eprintln_labeled("hint", "Run `clai --help` for usage.", Severity::Info);
         std::process::exit(NON_TTY_DEFAULT_EXIT);
     }
     cmd_interactive(cli)
@@ -329,59 +335,48 @@ fn cmd_init(config_path: Option<PathBuf>) -> Result<()> {
         },
         ..Default::default()
     };
+    let written = config_path
+        .clone()
+        .unwrap_or_else(default_config_path)
+        .display()
+        .to_string();
     c.save(config_path)?;
-
-    println!(
-        "Wrote {}. Run: clai models pull {}",
-        default_config_path().display(),
-        id
-    );
+    print_init_done(&written, id);
     Ok(())
 }
 
 fn cmd_doctor(config_path: Option<PathBuf>, model_override: Option<PathBuf>) -> Result<()> {
-    let host = HostContext::gather(None, None);
-    println!("Host:\n{}", host.to_prompt_json());
-
     let reg = registry::ModelRegistry::load_merged(&resolve_registry_cache_path_for_read())?;
-    println!("registry_version: {}", reg.registry_version);
-
     let cfg = config::load_config_raw(config_path.clone()).unwrap_or_default();
-    println!("config_version: {}", cfg.config_version);
-    println!("dry_run_default: {}", cfg.policy.dry_run_default);
+    let host = HostContext::gather(
+        cfg.preferred_shell.as_deref(),
+        cfg.execution_profile.as_deref(),
+    );
     let effective_interactive = resolve_effective_interactive_execution_mode(
         cfg.interactive.execution,
         None,
         false,
         cfg.policy.dry_run_default,
     );
-    println!(
-        "interactive.execution (config+env; CLI not applied here): {}  (raw config key: {:?})",
-        effective_interactive.as_str(),
-        cfg.interactive.execution
-    );
-    println!(
-        "execution.mode: {:?} docker_image: {:?}",
-        cfg.execution.mode, cfg.execution.docker_image
-    );
+    let model_path = resolve_model_path(&cfg, model_override, &reg)
+        .map(|p| p.display().to_string())
+        .map_err(|e| e.to_string());
 
-    println!("data_dir: {}", default_data_dir().display());
-    match resolve_model_path(&cfg, model_override, &reg) {
-        Ok(p) => println!("model_path: {}", p.display()),
-        Err(e) => println!("model_path: (unset) — {e:?}"),
-    }
-    println!(
-        "CLAI_N_GPU_LAYERS: {:?}",
-        std::env::var("CLAI_N_GPU_LAYERS").ok()
+    print_doctor_report(
+        &host,
+        reg.registry_version,
+        cfg.config_version,
+        cfg.policy.dry_run_default,
+        effective_interactive,
+        cfg.interactive.execution,
+        cfg.execution.mode,
+        cfg.execution.docker_image.as_deref(),
+        &default_data_dir().display().to_string(),
+        model_path,
+        std::env::var("CLAI_N_GPU_LAYERS").ok().as_deref(),
+        std::env::var("CLAI_JSON_SCHEMA_GRAMMAR").ok().as_deref(),
+        cfg!(feature = "llama"),
     );
-    println!(
-        "CLAI_JSON_SCHEMA_GRAMMAR: {:?} (GBNF sampler; default off — llama.cpp may abort if on)",
-        std::env::var("CLAI_JSON_SCHEMA_GRAMMAR").ok()
-    );
-    #[cfg(feature = "llama")]
-    println!("build: llama (embedded llama.cpp enabled)");
-    #[cfg(not(feature = "llama"))]
-    println!("build: no llama (tests / minimal)");
     Ok(())
 }
 
@@ -462,8 +457,9 @@ fn cmd_ask(
 
     let proposal = CommandProposal::parse_from_model_text(&raw)?;
     if print_only {
-        println!("Proposed: {}", serde_json::to_string_pretty(&proposal)?);
-        println!("(print-only; not executed)");
+        print_proposal_json(&proposal)?;
+        cli_note("(print-only; not executed)");
+        println!();
         return Ok(());
     }
 
@@ -471,7 +467,7 @@ fn cmd_ask(
     let force_capture = force_capture || cfg.ask_force_capture;
     let no_preview = no_preview || cfg.ask_no_preview;
     if verbose_ask {
-        println!("Proposed: {}", serde_json::to_string_pretty(&proposal)?);
+        print_proposal_json(&proposal)?;
     }
 
     let jail = std::env::current_dir()?;
@@ -498,13 +494,21 @@ fn cmd_ask(
             .prompt()
             .map_err(|e| clai::AppError::Msg(e.to_string()))?;
         if !ok {
-            println!("Aborted.");
+            println_labeled(
+                "clai",
+                "Aborted (confirmation declined).",
+                Severity::Warn,
+            );
             std::process::exit(CLAI_ASK_USER_DECLINED_EXIT);
         }
     }
 
     if cfg.policy.dry_run_default && !yes {
-        println!("(dry-run; not executed)");
+        println_labeled(
+            "clai",
+            "Dry-run: command not executed (policy.dry_run_default).",
+            Severity::Info,
+        );
         std::process::exit(CLAI_ASK_DRY_RUN_EXIT);
     }
 
@@ -538,15 +542,15 @@ fn cmd_ask(
         stream,
     )?;
     if verbose_ask {
-        if let Some(ctx) = non_direct_context_verbose(&proposal, &cfg.execution)? {
-            println!("{ctx}\n");
-        }
-        println!(
-            "status: {:?}\nstdout:\n{}\nstderr:\n{}",
-            out.status, out.stdout, out.stderr
+        let ctx = non_direct_context_verbose(&proposal, &cfg.execution)?;
+        print_verbose_run_report(
+            ctx.as_deref(),
+            &format!("{:?}", out.status),
+            &out.stdout,
+            &out.stderr,
         );
         if out.stdout.contains('\u{FFFD}') || out.stderr.contains('\u{FFFD}') {
-            eprintln!("note: captured output included non-UTF-8 bytes (shown as U+FFFD).");
+            eprint_captured_stream_encoding_note();
         }
     } else {
         match stream {
@@ -762,30 +766,37 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
         ModelsCmd::List => {
             let reg = ModelRegistry::load_merged(&cache_read)?;
             let cfg = config::load_config_raw(config_path.clone()).unwrap_or_default();
-            for m in &reg.models {
-                let mark = cfg
-                    .default_model_id
-                    .as_deref()
-                    .map(|d| d == m.id)
-                    .unwrap_or(false);
-                let loc = installed_model_path(&m.filename)
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "(not downloaded)".into());
-                println!(
-                    "{}{} — {} [{}] {}",
-                    if mark { "* " } else { "  " },
-                    m.id,
-                    m.display_name,
-                    m.profile,
-                    loc
-                );
-            }
+            let rows: Vec<ModelCatalogRow> = reg
+                .models
+                .iter()
+                .map(|m| {
+                    let is_default = cfg
+                        .default_model_id
+                        .as_deref()
+                        .map(|d| d == m.id.as_str())
+                        .unwrap_or(false);
+                    let location = installed_model_path(&m.filename)
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(not downloaded)".into());
+                    ModelCatalogRow {
+                        id: m.id.clone(),
+                        display_name: m.display_name.clone(),
+                        profile: m.profile.clone(),
+                        location,
+                        is_default,
+                    }
+                })
+                .collect();
+            print_models_list(&rows);
         }
         ModelsCmd::Search { query } => {
             let reg = ModelRegistry::load_merged(&cache_read)?;
-            for m in reg.search(&query) {
-                println!("{} — {}", m.id, m.display_name);
-            }
+            let hits: Vec<(&str, &str)> = reg
+                .search(&query)
+                .into_iter()
+                .map(|m| (m.id.as_str(), m.display_name.as_str()))
+                .collect();
+            print_models_search(&query, &hits);
         }
         ModelsCmd::Pull { id, verify } => {
             let reg = ModelRegistry::load_merged(&cache_read)?;
@@ -793,14 +804,20 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
                 .find(&id)
                 .ok_or_else(|| clai::AppError::Msg(format!("unknown model {}", id)))?;
             let p = registry::pull_model(m, &default_models_dir(), verify)?;
-            println!("{}", p.display());
+            print_models_pull_done(&id, &p.display().to_string());
         }
         ModelsCmd::Default { action } => {
             let mut cfg = load_cfg(config_path.clone()).unwrap_or_default();
             match action {
                 DefaultModelCmd::Set { id } => {
-                    cfg.default_model_id = Some(id);
-                    cfg.save(config_path)?;
+                    cfg.default_model_id = Some(id.clone());
+                    cfg.save(config_path.clone())?;
+                    let written = config_path
+                        .clone()
+                        .unwrap_or_else(default_config_path)
+                        .display()
+                        .to_string();
+                    print_models_default_set(&id, &written);
                 }
             }
         }
@@ -811,8 +828,9 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
                 .ok_or_else(|| clai::AppError::Msg(format!("unknown model {}", id)))?;
             let p = installed_model_path(&m.filename)
                 .ok_or_else(|| clai::AppError::Msg(format!("model file not present: {}", id)))?;
+            let disp = p.display().to_string();
             std::fs::remove_file(&p)?;
-            println!("removed {}", p.display());
+            print_models_rm(&disp);
         }
         ModelsCmd::UpdateRegistry { url } => {
             let u = url.unwrap_or_else(|| {
@@ -828,11 +846,7 @@ fn cmd_models(config_path: Option<PathBuf>, m: ModelsCmd) -> Result<()> {
                 .map_err(|e| clai::AppError::Msg(e.to_string()))?;
             let reg: ModelRegistry = serde_json::from_str(&body)?;
             registry::write_registry_cache(&cache_write, &reg)?;
-            println!(
-                "wrote {} (version {})",
-                cache_write.display(),
-                reg.registry_version
-            );
+            print_models_registry_updated(&cache_write.display().to_string(), reg.registry_version);
         }
     }
     Ok(())
@@ -863,8 +877,19 @@ fn cmd_me(m: MeCmd) -> Result<()> {
 
 fn cmd_migrate(config_path: Option<PathBuf>, m: MigrateCmd) -> Result<()> {
     match m {
-        MigrateCmd::DryRun => println!("{}", migrate::dry_run(config_path)?),
-        MigrateCmd::Apply => migrate::apply(config_path)?,
+        MigrateCmd::DryRun => {
+            let plan = migrate::dry_run(config_path)?;
+            cli_intro("clai migrate · dry-run", "no changes written");
+            cli_section("Plan");
+            println!("{plan}");
+            println!();
+        }
+        MigrateCmd::Apply => {
+            migrate::apply(config_path)?;
+            cli_intro("clai migrate · apply", "complete");
+            cli_note("Configuration updated to the latest schema version.");
+            println!();
+        }
     }
     Ok(())
 }
