@@ -319,6 +319,8 @@ mod tests {
                 reason: None,
                 needs_shell: false,
                 confidence: None,
+                script_body: None,
+                script_extension: None,
             }
         }
         #[cfg(windows)]
@@ -330,6 +332,8 @@ mod tests {
                 reason: None,
                 needs_shell: false,
                 confidence: None,
+                script_body: None,
+                script_extension: None,
             }
         }
     }
@@ -363,6 +367,8 @@ mod tests {
                     reason: None,
                     needs_shell: false,
                     confidence: None,
+                    script_body: None,
+                    script_extension: None,
                 }
             }
             #[cfg(windows)]
@@ -374,6 +380,8 @@ mod tests {
                     reason: None,
                     needs_shell: false,
                     confidence: None,
+                    script_body: None,
+                    script_extension: None,
                 }
             }
         };
@@ -421,6 +429,8 @@ mod tests {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         };
         let out = run_proposal(
             &p,

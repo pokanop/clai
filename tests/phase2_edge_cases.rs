@@ -38,6 +38,8 @@ mod unix {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         };
         let out = run_proposal(
             &p,
@@ -61,6 +63,8 @@ mod unix {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         };
         let out = run_proposal(
             &p,
@@ -91,6 +95,8 @@ mod unix {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         };
         let out = run_proposal(
             &p,
@@ -119,6 +125,8 @@ fn policy_still_blocks_obvious_destructive_proposal() {
         reason: None,
         needs_shell: false,
         confidence: None,
+        script_body: None,
+        script_extension: None,
     };
     let d = eng.evaluate(&p);
     assert!(d.blocked, "expected block for rm -rf /, got {d:?}");

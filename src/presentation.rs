@@ -30,6 +30,8 @@ pub enum PreRunLine {
     Blocked { reason: String },
     /// Footer when blocked.
     WontRun,
+    /// Ephemeral script materialized under the managed temp contract (US-5).
+    ManagedTempScript(String),
 }
 
 /// Display-only quoting for a single argv token (matches `main` preview behavior).
@@ -56,7 +58,11 @@ pub fn command_line_for_display(p: &CommandProposal) -> String {
 }
 
 /// Structured pre-run lines (for plain text or TTY styling). No executor calls.
-pub fn pre_run_lines(proposal: &CommandProposal, decision: &PolicyDecision) -> Vec<PreRunLine> {
+pub fn pre_run_lines(
+    proposal: &CommandProposal,
+    decision: &PolicyDecision,
+    managed_script_path: Option<&str>,
+) -> Vec<PreRunLine> {
     let mut lines: Vec<PreRunLine> = Vec::new();
 
     if decision.blocked {
@@ -66,6 +72,9 @@ pub fn pre_run_lines(proposal: &CommandProposal, decision: &PolicyDecision) -> V
             line: command_line_for_display(proposal),
             blocked: true,
         });
+        if let Some(p) = managed_script_path.filter(|s| !s.is_empty()) {
+            lines.push(PreRunLine::ManagedTempScript(p.to_string()));
+        }
         if proposal.needs_shell {
             lines.push(PreRunLine::ShellRequestNote);
         }
@@ -85,6 +94,9 @@ pub fn pre_run_lines(proposal: &CommandProposal, decision: &PolicyDecision) -> V
         line: command_line_for_display(proposal),
         blocked: false,
     });
+    if let Some(p) = managed_script_path.filter(|s| !s.is_empty()) {
+        lines.push(PreRunLine::ManagedTempScript(p.to_string()));
+    }
     if let Some(c) = &proposal.cwd {
         lines.push(PreRunLine::WorkingDir(c.clone()));
     }
@@ -117,10 +129,11 @@ pub fn pre_run_lines(proposal: &CommandProposal, decision: &PolicyDecision) -> V
 pub fn format_pre_run_presentation(
     proposal: &CommandProposal,
     decision: &PolicyDecision,
+    managed_script_path: Option<&str>,
 ) -> String {
     use std::fmt::Write as _;
 
-    let parts = pre_run_lines(proposal, decision);
+    let parts = pre_run_lines(proposal, decision, managed_script_path);
     let mut out = String::new();
     for (i, line) in parts.iter().enumerate() {
         if i > 0 {
@@ -169,6 +182,12 @@ pub fn format_pre_run_presentation(
             PreRunLine::WontRun => {
                 out.push_str("This command will not be run.");
             }
+            PreRunLine::ManagedTempScript(p) => {
+                let _ = write!(
+                    out,
+                    "Managed temp script: interpreter runs this ephemeral file (removed after exit): {p}"
+                );
+            }
         }
     }
     out
@@ -188,6 +207,8 @@ mod tests {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         };
         let d = PolicyDecision {
             tier: RiskTier::Standard,
@@ -195,7 +216,7 @@ mod tests {
             blocked: false,
             reason: None,
         };
-        let s = format_pre_run_presentation(&p, &d);
+        let s = format_pre_run_presentation(&p, &d, None);
         assert!(s.contains("no rationale provided"));
     }
 
@@ -208,6 +229,8 @@ mod tests {
             reason: Some("bad".into()),
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         };
         let d = PolicyDecision {
             tier: RiskTier::Destructive,
@@ -215,7 +238,7 @@ mod tests {
             blocked: true,
             reason: Some("matches high-risk blocklist".into()),
         };
-        let s = format_pre_run_presentation(&p, &d);
+        let s = format_pre_run_presentation(&p, &d, None);
         assert!(s.contains("Blocked:"));
         assert!(s.contains("will not be run"));
     }

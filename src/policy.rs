@@ -184,6 +184,8 @@ mod tests {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         };
         let d = eng.evaluate(&p);
         assert!(d.blocked);
@@ -201,8 +203,27 @@ mod tests {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         };
         let d = eng.evaluate(&p);
         assert!(d.blocked);
+    }
+
+    #[test]
+    fn strict_allowlist_sees_final_interpreter_with_temp_path() {
+        let eng = PolicyEngine::new(PathBuf::from("/tmp"), true, vec!["python3".into()]);
+        let p = CommandProposal {
+            program: "python3".into(),
+            args: vec!["/var/tmp/clai-script-abc/script.py".into()],
+            cwd: None,
+            reason: None,
+            needs_shell: false,
+            confidence: None,
+            script_body: None,
+            script_extension: None,
+        };
+        let d = eng.evaluate(&p);
+        assert!(!d.blocked);
     }
 }

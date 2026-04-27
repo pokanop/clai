@@ -417,6 +417,32 @@ Set [interactive].local_warmup = \"blocking\" or CLAI_INTERACTIVE__LOCAL_WARMUP=
             print_proposal_json(&proposal)?;
         }
 
+        if proposal.script_body.as_ref().is_some_and(|s| !s.is_empty())
+            && matches!(cfg.execution.mode, ExecutionMode::Docker)
+        {
+            eprintln_labeled(
+                "error",
+                "script_body is not supported when execution.mode = docker",
+                Severity::Error,
+            );
+            continue;
+        }
+
+        let prepared =
+            match crate::ephemeral_script::prepare_command_proposal(proposal, &cfg.tooling) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln_labeled("error", &e.to_string(), Severity::Error);
+                    continue;
+                }
+            };
+        let managed_display = prepared
+            .script_path
+            .as_ref()
+            .and_then(|p| p.to_str().map(std::string::ToString::to_string));
+        let proposal = prepared.proposal;
+        let _ephemeral_script_hold = prepared.temp;
+
         let jail = std::env::current_dir()?;
         let policy = PolicyEngine::new(
             jail,
@@ -425,7 +451,7 @@ Set [interactive].local_warmup = \"blocking\" or CLAI_INTERACTIVE__LOCAL_WARMUP=
         );
         let decision = policy.evaluate(&proposal);
 
-        print_pre_run(&proposal, &decision);
+        print_pre_run(&proposal, &decision, managed_display.as_deref());
 
         if decision.blocked {
             continue;

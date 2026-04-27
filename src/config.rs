@@ -82,6 +82,34 @@ pub struct AppConfig {
     /// Extra Hugging Face GGUF catalog entries (merged with the built-in and cached registry).
     #[serde(default)]
     pub models: ModelsSection,
+
+    /// Runtime detection and ephemeral script materialization (see PRD adaptive script execution).
+    #[serde(default)]
+    pub tooling: ToolingConfig,
+}
+
+/// `[tooling]` — PATH probes and optional file-backed scripts from model output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolingConfig {
+    /// When true (default), probe PATH once per process and expose results in the system prompt and `doctor`.
+    #[serde(default = "default_true")]
+    pub detect_runtimes: bool,
+    /// When true, `script_body` in model JSON is written to a private temp file and the path is appended to argv.
+    #[serde(default)]
+    pub ephemeral_scripts: bool,
+    /// Prompt guidance: prefer short scripts when a runtime fits (does not force model output).
+    #[serde(default = "default_true")]
+    pub prefer_scripts_when_available: bool,
+}
+
+impl Default for ToolingConfig {
+    fn default() -> Self {
+        Self {
+            detect_runtimes: true,
+            ephemeral_scripts: false,
+            prefer_scripts_when_available: true,
+        }
+    }
 }
 
 /// Optional Hugging Face GGUF entry; same fields as `registry.json` model objects.
@@ -192,6 +220,7 @@ impl Default for AppConfig {
             ask_no_preview: false,
             interactive: InteractiveSection::default(),
             models: ModelsSection::default(),
+            tooling: ToolingConfig::default(),
         }
     }
 }
@@ -387,5 +416,20 @@ mod tests {
             AppConfig::default().interactive.local_warmup,
             LocalWarmupMode::Off
         );
+    }
+
+    #[test]
+    fn tooling_section_parses_from_toml() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path().join("config.toml");
+        let mut f = std::fs::File::create(&p).expect("file");
+        f.write_all(
+            b"config_version = 1\n[tooling]\ndetect_runtimes = false\nephemeral_scripts = true\nprefer_scripts_when_available = false\n",
+        )
+        .expect("write");
+        let c = AppConfig::load(Some(p)).expect("load");
+        assert!(!c.tooling.detect_runtimes);
+        assert!(c.tooling.ephemeral_scripts);
+        assert!(!c.tooling.prefer_scripts_when_available);
     }
 }

@@ -9,6 +9,7 @@ use crate::host_context::HostContext;
 use crate::interactive_mode::InteractiveExecutionMode;
 use crate::policy::PolicyDecision;
 use crate::presentation::{pre_run_lines, PreRunLine};
+use crate::runtime_tooling::RuntimeTooling;
 use crate::schema::CommandProposal;
 use crate::tty::{use_color_for_stdout, use_color_for_stream};
 
@@ -319,15 +320,23 @@ pub fn print_init_done(config_path: &str, default_model_id: &str) {
 }
 
 /// Print a styled pre-run block from structured lines.
-pub fn print_pre_run(proposal: &CommandProposal, decision: &PolicyDecision) {
+pub fn print_pre_run(
+    proposal: &CommandProposal,
+    decision: &PolicyDecision,
+    managed_script_path: Option<&str>,
+) {
     if !out_style() {
         println!(
             "{}",
-            crate::presentation::format_pre_run_presentation(proposal, decision,)
+            crate::presentation::format_pre_run_presentation(
+                proposal,
+                decision,
+                managed_script_path,
+            )
         );
         return;
     }
-    for line in pre_run_lines(proposal, decision) {
+    for line in pre_run_lines(proposal, decision, managed_script_path) {
         match line {
             PreRunLine::SectionProposal => {
                 println!();
@@ -407,6 +416,9 @@ pub fn print_pre_run(proposal: &CommandProposal, decision: &PolicyDecision) {
                     "  This command will not be run".to_string()
                 };
                 println!("{t}");
+            }
+            PreRunLine::ManagedTempScript(p) => {
+                cli_kv("Managed temp script", p.as_str());
             }
         }
     }
@@ -609,6 +621,9 @@ pub fn print_doctor_report(
     clai_n_gpu_layers: Option<&str>,
     clai_json_schema_grammar: Option<&str>,
     local_inference_enabled: bool,
+    tooling_detect_runtimes: bool,
+    tooling_ephemeral_scripts: bool,
+    runtime_tooling: &RuntimeTooling,
 ) {
     cli_intro("clai doctor", "environment this install will use");
 
@@ -633,6 +648,25 @@ pub fn print_doctor_report(
     cli_kv("TTY (stdout)", tty);
     cli_kv("Working directory", &host.cwd);
     cli_kv("Path separator", &host.path_separator.to_string());
+
+    cli_section("Runtime tooling (PATH)");
+    cli_kv(
+        "[tooling].ephemeral_scripts",
+        if tooling_ephemeral_scripts {
+            "true — model may use script_body (direct execution only)"
+        } else {
+            "false — script_body rejected (default)"
+        },
+    );
+    if tooling_detect_runtimes {
+        for (label, status) in runtime_tooling.doctor_rows() {
+            cli_kv(label, &status);
+        }
+    } else {
+        cli_note(
+            "detect_runtimes is false — no interpreter probes (see [tooling] in config / CLAI_TOOLING__DETECT_RUNTIMES).",
+        );
+    }
 
     cli_section("Model catalog");
     cli_kv("Registry format version", &registry_version.to_string());

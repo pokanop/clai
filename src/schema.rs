@@ -64,6 +64,12 @@ pub struct CommandProposal {
     pub needs_shell: bool,
     #[serde(default)]
     pub confidence: Option<String>,
+    /// When `[tooling].ephemeral_scripts` is true, written to a private temp file and path appended to `args`.
+    #[serde(default)]
+    pub script_body: Option<String>,
+    /// Optional suffix for the temp file (e.g. `py`, `js`); refined default is inferred from `program`.
+    #[serde(default)]
+    pub script_extension: Option<String>,
 }
 
 impl CommandProposal {
@@ -71,13 +77,15 @@ impl CommandProposal {
         r##"{
   "type": "object",
   "required": ["program"],
-  "properties": {
+    "properties": {
     "program": { "type": "string" },
     "args": { "type": "array", "items": { "type": "string" } },
     "cwd": { "type": "string" },
     "reason": { "type": "string" },
     "needs_shell": { "type": "boolean" },
-    "confidence": { "type": "string" }
+    "confidence": { "type": "string" },
+    "script_body": { "type": "string" },
+    "script_extension": { "type": "string" }
   }
 }"##
     }
@@ -135,6 +143,14 @@ tail"#;
         let p = CommandProposal::parse_from_model_text(t).unwrap();
         assert_eq!(p.program, "echo");
         assert_eq!(p.args, vec!["hi"]);
+    }
+
+    #[test]
+    fn parses_optional_script_body_and_extension() {
+        let t = r#"{"program":"python3","args":["-u"],"script_body":"print(42)","script_extension":"py","reason":"demo"}"#;
+        let p = CommandProposal::parse_from_model_text(t).unwrap();
+        assert_eq!(p.script_body.as_deref(), Some("print(42)"));
+        assert_eq!(p.script_extension.as_deref(), Some("py"));
     }
 
     #[test]

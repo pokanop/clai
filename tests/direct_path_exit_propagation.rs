@@ -42,6 +42,8 @@ fn success_proposal() -> CommandProposal {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         }
     }
     #[cfg(windows)]
@@ -53,6 +55,8 @@ fn success_proposal() -> CommandProposal {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         }
     }
 }
@@ -67,6 +71,8 @@ fn false_proposal() -> CommandProposal {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         }
     }
     #[cfg(windows)]
@@ -78,6 +84,8 @@ fn false_proposal() -> CommandProposal {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         }
     }
 }
@@ -92,6 +100,8 @@ fn sh_exit_n(n: i32) -> CommandProposal {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         }
     }
     #[cfg(windows)]
@@ -103,6 +113,8 @@ fn sh_exit_n(n: i32) -> CommandProposal {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         }
     }
 }

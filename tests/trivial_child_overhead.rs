@@ -33,6 +33,8 @@ fn noop_proposal() -> CommandProposal {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         }
     }
     #[cfg(windows)]
@@ -44,6 +46,8 @@ fn noop_proposal() -> CommandProposal {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         }
     }
 }

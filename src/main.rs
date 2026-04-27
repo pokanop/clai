@@ -19,7 +19,7 @@ use clai::cloud;
 use clai::config::{
     self, default_config_path, default_data_dir, default_models_dir, default_registry_cache_path,
     installed_model_path, resolve_registry_cache_path_for_read, AppConfig, ExecutionConfig,
-    ExecutionMode,
+    ExecutionMode, ToolingConfig,
 };
 use clai::executor;
 use clai::host_context::HostContext;
@@ -309,7 +309,8 @@ fn cmd_interactive(cli: Cli) -> Result<()> {
         cfg.preferred_shell.as_deref(),
         cfg.execution_profile.as_deref(),
     );
-    let system = build_system_prompt(&host);
+    let tooling_snap = clai::runtime_tooling::runtime_tooling_snapshot(cfg.tooling.detect_runtimes);
+    let system = build_system_prompt(&host, &tooling_snap, &cfg.tooling);
     clai::session::run_interactive_session(
         cfg,
         cli.model,
@@ -418,6 +419,7 @@ fn cmd_doctor(config_path: Option<PathBuf>, model_override: Option<PathBuf>) -> 
         .map(|p| p.display().to_string())
         .map_err(|e| e.to_string());
 
+    let tooling_snap = clai::runtime_tooling::runtime_tooling_snapshot(cfg.tooling.detect_runtimes);
     print_doctor_report(
         &host,
         reg.registry_version,
@@ -432,8 +434,15 @@ fn cmd_doctor(config_path: Option<PathBuf>, model_override: Option<PathBuf>) -> 
         std::env::var("CLAI_N_GPU_LAYERS").ok().as_deref(),
         std::env::var("CLAI_JSON_SCHEMA_GRAMMAR").ok().as_deref(),
         cfg!(feature = "llama-embed"),
+        cfg.tooling.detect_runtimes,
+        cfg.tooling.ephemeral_scripts,
+        &tooling_snap,
     );
     Ok(())
+}
+
+fn discard_ephemeral_temp(slot: &mut Option<tempfile::TempDir>) {
+    drop(slot.take());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -454,7 +463,8 @@ fn cmd_ask(
         cfg.preferred_shell.as_deref(),
         cfg.execution_profile.as_deref(),
     );
-    let system = build_system_prompt(&host);
+    let tooling_snap = clai::runtime_tooling::runtime_tooling_snapshot(cfg.tooling.detect_runtimes);
+    let system = build_system_prompt(&host, &tooling_snap, &cfg.tooling);
     let user = format!("User request: {}\nReply with ONLY the JSON object.", prompt);
     let no_stream = std::env::var("CLAI_NO_STREAM")
         .ok()
@@ -539,6 +549,35 @@ fn cmd_ask(
         print_proposal_json(&proposal)?;
     }
 
+    if proposal.script_body.as_ref().is_some_and(|s| !s.is_empty())
+        && matches!(cfg.execution.mode, ExecutionMode::Docker)
+    {
+        return Err(clai::AppError::Msg(
+            "script_body is not supported when execution.mode = docker (container does not see host temp files)"
+                .into(),
+        ));
+    }
+
+    let prepared = clai::ephemeral_script::prepare_command_proposal(proposal, &cfg.tooling)?;
+    let managed_display = prepared
+        .script_path
+        .as_ref()
+        .and_then(|p| p.to_str().map(std::string::ToString::to_string));
+    let mut ephemeral_temp = prepared.temp;
+    if verbose_ask && ephemeral_temp.is_some() {
+        if let Some(dir) = ephemeral_temp.as_ref() {
+            println_labeled(
+                "clai",
+                &format!(
+                    "Ephemeral artifacts: 1 file under {} (contents not logged)",
+                    dir.path().display()
+                ),
+                Severity::Info,
+            );
+        }
+    }
+    let proposal = prepared.proposal;
+
     let jail = std::env::current_dir()?;
     let policy = PolicyEngine::new(
         jail,
@@ -547,9 +586,10 @@ fn cmd_ask(
     );
     let decision = policy.evaluate(&proposal);
     if verbose_ask && io::stdout().is_terminal() {
-        print_pre_run(&proposal, &decision);
+        print_pre_run(&proposal, &decision, managed_display.as_deref());
     }
     if decision.blocked {
+        discard_ephemeral_temp(&mut ephemeral_temp);
         return Err(clai::AppError::Msg(
             decision
                 .reason
@@ -563,12 +603,14 @@ fn cmd_ask(
             .prompt()
             .map_err(|e| clai::AppError::Msg(e.to_string()))?;
         if !ok {
+            discard_ephemeral_temp(&mut ephemeral_temp);
             println_labeled("clai", "Aborted (confirmation declined).", Severity::Warn);
             std::process::exit(CLAI_ASK_USER_DECLINED_EXIT);
         }
     }
 
     if cfg.policy.dry_run_default && !yes {
+        discard_ephemeral_temp(&mut ephemeral_temp);
         println_labeled(
             "clai",
             "Dry-run: command not executed (policy.dry_run_default).",
@@ -635,6 +677,7 @@ fn cmd_ask(
             }
         }
     }
+    discard_ephemeral_temp(&mut ephemeral_temp);
     std::process::exit(out.clai_ask_process_exit);
 }
 
@@ -727,6 +770,8 @@ mod ask_preview_tests {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         }
     }
 
@@ -748,6 +793,8 @@ mod ask_preview_tests {
             reason: Some("secret or bypass hint from model".to_string()),
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         };
         let line = ask_command_line_preview(&p);
         assert!(!line.contains("reason"));
@@ -783,6 +830,8 @@ mod non_direct_context_tests {
             reason: None,
             needs_shell: false,
             confidence: None,
+            script_body: None,
+            script_extension: None,
         }
     }
 
@@ -987,10 +1036,42 @@ fn resolve_model_path(
     registry::default_model_path_for(id, reg)
 }
 
-fn build_system_prompt(host: &HostContext) -> String {
+fn build_system_prompt(
+    host: &HostContext,
+    tooling: &clai::runtime_tooling::RuntimeTooling,
+    tooling_cfg: &ToolingConfig,
+) -> String {
+    let tooling_block = if tooling_cfg.detect_runtimes {
+        format!(
+            "Detected runtimes (this machine, PATH): {}\n",
+            tooling.to_prompt_json()
+        )
+    } else {
+        "Runtime PATH detection is disabled — do not assume python/node/ruby/etc. unless the user stated them.\n".to_string()
+    };
+
+    let script_file_rules = if tooling_cfg.ephemeral_scripts {
+        "Optional script file: for multi-line programs you may set \"script_body\" (UTF-8 source) and \"program\" to the interpreter. \
+Optional \"script_extension\" (e.g. py, js) sets the temp file suffix; args are placed before the temp path. \
+Use only when clearer than a long shell one-liner. Trivial one-shot tasks stay a single program + args without script_body.\n"
+            .to_string()
+    } else {
+        "Do not set \"script_body\" — ephemeral script files are disabled. Use interpreter -c style args or short argv when needed.\n"
+            .to_string()
+    };
+
+    let prefer = if tooling_cfg.prefer_scripts_when_available {
+        "When a detected runtime fits better than a fragile shell pipeline, prefer a small script or interpreter -c; keep output as this JSON object only (no markdown).\n"
+    } else {
+        ""
+    };
+
     format!(
         "You output exactly one JSON object for running a CLI command. Schema:\n{}\n\
          Host: os={} arch={} cwd={} shell_family={:?} path_sep={}\n\
+         {tooling_block}\
+         {script_file_rules}\
+         {prefer}\
          Rules: use program + args (argv). No markdown. No prose outside JSON.\n\
          Always populate \"reason\" with a concise explanation of WHY this argv fits the user request \
          (what problem it solves / why it is appropriate). If you refuse, use program \"echo\" and args [\"refused\"] and a reason field.",
