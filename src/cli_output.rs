@@ -167,9 +167,10 @@ pub fn eprint_captured_stream_encoding_note() {
     }
     eprintln!(
         "  {}",
-        Style::new().dim().italic().apply_to(
-            "note: captured output contained non-UTF-8 bytes (shown as U+FFFD)."
-        )
+        Style::new()
+            .dim()
+            .italic()
+            .apply_to("note: captured output contained non-UTF-8 bytes (shown as U+FFFD).")
     );
 }
 
@@ -621,11 +622,15 @@ pub fn print_doctor_report(
     match clai_json_schema_grammar {
         Some(v) if !v.is_empty() => {
             cli_kv("CLAI_JSON_SCHEMA_GRAMMAR", v);
-            cli_note("GBNF JSON schema sampling is enabled; some llama.cpp builds abort if this is on.");
+            cli_note(
+                "GBNF JSON schema sampling is enabled; some llama.cpp builds abort if this is on.",
+            );
         }
         _ => {
             cli_kv("CLAI_JSON_SCHEMA_GRAMMAR", "not set (off — recommended)");
-            cli_note("Turn on only if you need schema-constrained decoding and your build supports it.");
+            cli_note(
+                "Turn on only if you need schema-constrained decoding and your build supports it.",
+            );
         }
     }
 
