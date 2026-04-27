@@ -24,17 +24,34 @@ cargo build --release
 | Vulkan                        | `cargo build --release --no-default-features --features llama-vulkan` |
 | Corporate proxy TLS           | add `--features native-tls`                                           |
 
-
 Optional: `./scripts/install-git-hooks.sh` — `pre-commit` runs `cargo fmt` on Rust files.
+
+## Install
+
+After a release build, the binary is at `target/release/clai` (`.exe` on Windows).
+
+- **From a clone (typical):** install into Cargo’s binary directory (usually `~/.cargo/bin`; rustup adds this to your `PATH` by default):
+
+  ```bash
+  cargo install --path . --locked
+  ```
+
+  If you are not using the default feature set, pass the same flags as in the build table (for example `--no-default-features --features llama-metal` on Apple Silicon).
+
+- **Manual:** copy or symlink `target/release/clai` to a directory on your `PATH`, or prepend `target/release` to `PATH` while developing in this repository.
+
+Prebuilt archives from GitHub Releases are documented under [Self-update](#self-update); unpack and place the binary on your `PATH` if you prefer not to build from source.
 
 ## Quick start
 
+If you have not [installed](#install) the binary, use `cargo run --` in place of `clai` (for example `cargo run -- doctor`).
+
 ```bash
-cargo run -- doctor
-cargo run -- init
-cargo run -- models list
-cargo run -- models pull <catalog-id>    # e.g. from `models list`
-cargo run -- ask --print-only "list files in the current directory"
+clai doctor
+clai init
+clai models list
+clai models pull <catalog-id>    # e.g. from `models list`
+clai ask --print-only "list files in the current directory"
 ```
 
 - **Catalog:** built-in [assets/registry.json](assets/registry.json); refresh with `clai models update-registry` or set `CLAI_REGISTRY_URL`. Add extra Hugging Face models with `[[models.extra]]` in `config.toml` (same fields as the registry). `clai models ollama` lists local Ollama tags for discovery; `clai` still uses GGUF files locally (or a path/cloud model from config) unless you wire cloud mode.
