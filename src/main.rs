@@ -9,13 +9,13 @@ use tracing_subscriber::EnvFilter;
 
 use clai::app_update;
 use clai::ask_exit::{CLAI_ASK_DRY_RUN_EXIT, CLAI_ASK_USER_DECLINED_EXIT};
+use clai::cli_output::{print_pre_run, print_run_hint};
 use clai::cloud;
 use clai::config::{
     self, default_config_path, default_data_dir, default_models_dir, default_registry_cache_path,
     installed_model_path, resolve_registry_cache_path_for_read, AppConfig, ExecutionConfig,
     ExecutionMode,
 };
-use clai::engine;
 use clai::executor;
 use clai::host_context::HostContext;
 use clai::interactive_mode::{
@@ -23,7 +23,6 @@ use clai::interactive_mode::{
 };
 use clai::migrate;
 use clai::policy::PolicyEngine;
-use clai::presentation::format_pre_run_presentation;
 use clai::registry::{self, ModelRegistry};
 use clai::schema::CommandProposal;
 use clai::stream_strategy::{
@@ -406,8 +405,14 @@ fn cmd_ask(
     );
     let system = build_system_prompt(&host);
     let user = format!("User request: {}\nReply with ONLY the JSON object.", prompt);
+    let no_stream = std::env::var("CLAI_NO_STREAM")
+        .ok()
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
 
     let raw = if use_cloud && cfg.cloud.enabled {
+        if !no_stream {
+            clai::cli_output::eprint_cloud_request_prelude();
+        }
         let base = cfg
             .cloud
             .base_url
@@ -433,7 +438,26 @@ fn cmd_ask(
         )?
     } else {
         let path = resolve_model_path(&cfg, model_override, &reg)?;
-        engine::complete_local_best_effort(&path, &system, &user, 256)?
+        #[cfg(feature = "llama")]
+        {
+            if !no_stream {
+                clai::cli_output::eprint_model_stream_prelude();
+            }
+            let stream = !no_stream;
+            let r = clai::engine::complete_local_with(&path, &system, &user, 256, |piece: &str| {
+                if stream {
+                    clai::cli_output::eprint_model_stream_piece(piece);
+                }
+            });
+            if stream {
+                clai::cli_output::eprint_model_stream_end();
+            }
+            r.map_err(clai::AppError::Msg)?
+        }
+        #[cfg(not(feature = "llama"))]
+        {
+            clai::engine::complete_local_best_effort(&path, &system, &user, 256)?
+        }
     };
 
     let proposal = CommandProposal::parse_from_model_text(&raw)?;
@@ -458,7 +482,7 @@ fn cmd_ask(
     );
     let decision = policy.evaluate(&proposal);
     if verbose_ask && io::stdout().is_terminal() {
-        println!("{}", format_pre_run_presentation(&proposal, &decision));
+        print_pre_run(&proposal, &decision);
     }
     if decision.blocked {
         return Err(clai::AppError::Msg(
@@ -501,9 +525,9 @@ fn cmd_ask(
     );
     if !verbose_ask && !no_preview && io::stdout().is_terminal() {
         if let Some(line) = non_direct_context_one_line(&proposal, &cfg.execution)? {
-            println!("{line}");
+            print_run_hint(&line);
         } else {
-            println!("Run: {}", ask_command_line_preview(&proposal));
+            print_run_hint(&format!("Run: {}", ask_command_line_preview(&proposal)));
         }
     }
     let out = executor::run_proposal(

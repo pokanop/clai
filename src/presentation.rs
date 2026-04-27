@@ -3,6 +3,35 @@
 use crate::policy::{PolicyDecision, RiskTier};
 use crate::schema::CommandProposal;
 
+/// One line of the pre-run proposal block (plain or styled).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreRunLine {
+    /// Top banner for an allowed proposal.
+    SectionProposal,
+    /// Top banner when policy blocks.
+    SectionBlocked,
+    /// `blocked == true` → "Command line:"; else shell vs executable + args.
+    CommandLine {
+        needs_shell: bool,
+        line: String,
+        blocked: bool,
+    },
+    /// Extra `needs_shell` note (only when **blocked** and `needs_shell`).
+    ShellRequestNote,
+    /// `cwd: …`
+    WorkingDir(String),
+    /// User-visible intent (from `reason`).
+    Intent(String),
+    /// Confidence if present in model output.
+    Confidence(String),
+    /// Extra confirmation for sensitive / destructive.
+    PolicyConfirm,
+    /// Blocked reason from policy.
+    Blocked { reason: String },
+    /// Footer when blocked.
+    WontRun,
+}
+
 /// Display-only quoting for a single argv token (matches `main` preview behavior).
 pub fn shell_escape_for_display(t: &str) -> String {
     if t.is_empty() {
@@ -26,79 +55,123 @@ pub fn command_line_for_display(p: &CommandProposal) -> String {
     s
 }
 
-/// Rich pre-run block: argv/shell, intent, rationale, policy hints. No executor calls.
-pub fn format_pre_run_presentation(
-    proposal: &CommandProposal,
-    decision: &PolicyDecision,
-) -> String {
-    let mut lines: Vec<String> = Vec::new();
+/// Structured pre-run lines (for plain text or TTY styling). No executor calls.
+pub fn pre_run_lines(proposal: &CommandProposal, decision: &PolicyDecision) -> Vec<PreRunLine> {
+    let mut lines: Vec<PreRunLine> = Vec::new();
 
     if decision.blocked {
-        lines.push("── Proposal (blocked) ──".to_string());
-        lines.push(format!(
-            "Command line: {}",
-            command_line_for_display(proposal)
-        ));
+        lines.push(PreRunLine::SectionBlocked);
+        lines.push(PreRunLine::CommandLine {
+            needs_shell: proposal.needs_shell,
+            line: command_line_for_display(proposal),
+            blocked: true,
+        });
         if proposal.needs_shell {
-            lines.push(
-                "Shell: this proposal requests shell execution (`needs_shell: true`).".to_string(),
-            );
+            lines.push(PreRunLine::ShellRequestNote);
         }
         let why = decision
             .reason
             .as_deref()
-            .unwrap_or("blocked by policy (no reason given).");
-        lines.push(format!("Blocked: {why}"));
-        lines.push("This command will not be run.".to_string());
-        return lines.join("\n");
+            .unwrap_or("blocked by policy (no reason given).")
+            .to_string();
+        lines.push(PreRunLine::Blocked { reason: why });
+        lines.push(PreRunLine::WontRun);
+        return lines;
     }
 
-    lines.push("── Proposal ──".to_string());
-    if proposal.needs_shell {
-        lines.push(format!(
-            "Shell line (needs_shell): {}",
-            command_line_for_display(proposal)
-        ));
-    } else {
-        lines.push(format!(
-            "Executable + args: {}",
-            command_line_for_display(proposal)
-        ));
-    }
-
+    lines.push(PreRunLine::SectionProposal);
+    lines.push(PreRunLine::CommandLine {
+        needs_shell: proposal.needs_shell,
+        line: command_line_for_display(proposal),
+        blocked: false,
+    });
     if let Some(c) = &proposal.cwd {
-        lines.push(format!("Working directory: {c}"));
+        lines.push(PreRunLine::WorkingDir(c.clone()));
     }
-
     let intent = proposal
         .reason
         .as_deref()
         .filter(|s| !s.trim().is_empty())
-        .map(|r| format!("What / intent: {r}"))
-        .unwrap_or_else(|| "What / intent: (no rationale provided in model output)".to_string());
-    lines.push(intent);
-
+        .map(str::to_string)
+        .unwrap_or_else(|| "(no rationale provided in model output)".to_string());
+    lines.push(PreRunLine::Intent(intent));
     if let Some(conf) = proposal
         .confidence
         .as_deref()
         .filter(|s| !s.trim().is_empty())
     {
-        lines.push(format!("Confidence: {conf}"));
+        lines.push(PreRunLine::Confidence(conf.to_string()));
     }
-
     match decision.tier {
         RiskTier::ReadOnly | RiskTier::Standard => {}
         RiskTier::Sensitive | RiskTier::Destructive => {
             if decision.requires_confirmation {
-                lines.push(
-                    "Policy: this command requires extra confirmation before it may run."
-                        .to_string(),
-                );
+                lines.push(PreRunLine::PolicyConfirm);
             }
         }
     }
+    lines
+}
 
-    lines.join("\n")
+/// Rich pre-run block: argv/shell, intent, rationale, policy hints. No executor calls.
+pub fn format_pre_run_presentation(
+    proposal: &CommandProposal,
+    decision: &PolicyDecision,
+) -> String {
+    use std::fmt::Write as _;
+
+    let parts = pre_run_lines(proposal, decision);
+    let mut out = String::new();
+    for (i, line) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        match line {
+            PreRunLine::SectionProposal => {
+                out.push_str("── Proposal ──");
+            }
+            PreRunLine::SectionBlocked => {
+                out.push_str("── Proposal (blocked) ──");
+            }
+            PreRunLine::CommandLine {
+                needs_shell,
+                line,
+                blocked,
+            } => {
+                if *blocked {
+                    let _ = write!(out, "Command line: {line}");
+                } else if *needs_shell {
+                    let _ = write!(out, "Shell line (needs_shell): {line}");
+                } else {
+                    let _ = write!(out, "Executable + args: {line}");
+                }
+            }
+            PreRunLine::ShellRequestNote => {
+                out.push_str(
+                    "Shell: this proposal requests shell execution (`needs_shell: true`).",
+                );
+            }
+            PreRunLine::WorkingDir(c) => {
+                let _ = write!(out, "Working directory: {c}");
+            }
+            PreRunLine::Intent(s) => {
+                let _ = write!(out, "What / intent: {s}");
+            }
+            PreRunLine::Confidence(c) => {
+                let _ = write!(out, "Confidence: {c}");
+            }
+            PreRunLine::PolicyConfirm => {
+                out.push_str("Policy: this command requires extra confirmation before it may run.");
+            }
+            PreRunLine::Blocked { reason } => {
+                let _ = write!(out, "Blocked: {reason}");
+            }
+            PreRunLine::WontRun => {
+                out.push_str("This command will not be run.");
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -47,7 +47,7 @@ If either stdin or stdout is **not** a TTY, bare `clai` / `clai interactive` **d
 
 | Mode | Behavior |
 | --- | --- |
-| `dry-run` | Show the structured pre-run summary; never execute. |
+| `dry-run` | Show the pre-run summary, then **ask** whether to execute (default **no**; policy can still require a sensitive step). |
 | `confirm` | Show the summary, then prompt before run (default answer **no**). |
 | `auto` | Show the summary and run without the extra “run it?” step; **policy** may still require a sensitive-operation confirm unless you pass `--yes`. |
 

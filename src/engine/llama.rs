@@ -71,6 +71,7 @@ fn complete_with_loaded_model(
     system: &str,
     user: &str,
     max_new_tokens: i32,
+    mut on_token: impl FnMut(&str),
 ) -> Result<String, String> {
     let tmpl = model
         .chat_template(None)
@@ -84,18 +85,23 @@ fn complete_with_loaded_model(
     ])
     .to_string();
 
+    let enable_thinking = std::env::var("CLAI_ENABLE_THINKING")
+        .ok()
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"));
+    let reasoning_format = std::env::var("CLAI_REASONING_FORMAT").ok();
+
     let params = OpenAIChatTemplateParams {
         messages_json: &messages,
         tools_json: None,
         tool_choice: None,
         json_schema: Some(schema_str),
         grammar: None,
-        reasoning_format: None,
+        reasoning_format: reasoning_format.as_deref(),
         chat_template_kwargs: None,
         add_generation_prompt: true,
         use_jinja: true,
         parallel_tool_calls: false,
-        enable_thinking: false,
+        enable_thinking,
         add_bos: false,
         add_eos: false,
         parse_tool_calls: false,
@@ -178,6 +184,7 @@ fn complete_with_loaded_model(
             .token_to_piece(token, &mut decoder, true, None)
             .map_err(|e| format!("piece: {:?}", e))?;
         out.push_str(&piece);
+        on_token(&piece);
 
         batch.clear();
         batch
@@ -199,9 +206,20 @@ pub fn complete_local(
     user: &str,
     max_new_tokens: i32,
 ) -> Result<String, String> {
+    complete_local_with(model_path, system, user, max_new_tokens, |_| {})
+}
+
+/// Like [`complete_local`], with a callback for each decoded piece (e.g. TTY stream).
+pub fn complete_local_with<F: FnMut(&str)>(
+    model_path: &Path,
+    system: &str,
+    user: &str,
+    max_new_tokens: i32,
+    on_token: F,
+) -> Result<String, String> {
     send_logs_to_tracing(LogOptions::default().with_logs_enabled(false));
     let mut s = LocalLlamaSession::open(model_path)?;
-    s.complete(system, user, max_new_tokens)
+    s.complete(system, user, max_new_tokens, on_token)
 }
 
 /// Session-scoped local inference: **one** backend + model load; subsequent [`complete`](Self::complete)
@@ -251,12 +269,20 @@ impl LocalLlamaSession {
         &self.model_path
     }
 
-    pub fn complete(
+    pub fn complete<F: FnMut(&str)>(
         &mut self,
         system: &str,
         user: &str,
         max_new_tokens: i32,
+        on_token: F,
     ) -> Result<String, String> {
-        complete_with_loaded_model(&self.model, &self.backend, system, user, max_new_tokens)
+        complete_with_loaded_model(
+            &self.model,
+            &self.backend,
+            system,
+            user,
+            max_new_tokens,
+            on_token,
+        )
     }
 }

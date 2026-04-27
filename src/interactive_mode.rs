@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 #[clap(rename_all = "kebab-case")]
 pub enum InteractiveExecutionMode {
-    /// Show the proposal but never call the executor for policy-approved commands.
+    /// Show the proposal, then prompt whether to execute (default **no**); policy may still apply before run.
     DryRun,
     /// Show the proposal, then prompt before run (unless blocked or dry-run).
     #[default]
@@ -43,10 +43,10 @@ pub fn needs_interactive_run_prompt(mode: InteractiveExecutionMode, policy_auto_
     mode == InteractiveExecutionMode::Confirm && !policy_auto_yes
 }
 
-/// FR-16 helper: policy sensitive confirmation is skipped in **dry-run** interactive mode (steps 2–4).
+/// True when **dry-run** should ask whether to execute (before policy and the confirm-mode run prompt).
 #[must_use]
-pub fn interactive_dry_run_skips_policy_and_run_prompts(mode: InteractiveExecutionMode) -> bool {
-    mode == InteractiveExecutionMode::DryRun
+pub fn needs_dry_run_execute_prompt(mode: InteractiveExecutionMode, policy_auto_yes: bool) -> bool {
+    mode == InteractiveExecutionMode::DryRun && !policy_auto_yes
 }
 
 /// Resolve effective mode: **CLI `--yes` > CLI `--interactive-mode` > config (file+env via figment) > legacy `dry_run_default`**.
@@ -161,12 +161,18 @@ mod tests {
     }
 
     #[test]
-    fn fr16_dry_run_skips_downstream_prompts() {
-        assert!(interactive_dry_run_skips_policy_and_run_prompts(
-            InteractiveExecutionMode::DryRun
+    fn dry_run_asks_before_execute_unless_yes() {
+        assert!(needs_dry_run_execute_prompt(
+            InteractiveExecutionMode::DryRun,
+            false
         ));
-        assert!(!interactive_dry_run_skips_policy_and_run_prompts(
-            InteractiveExecutionMode::Confirm
+        assert!(!needs_dry_run_execute_prompt(
+            InteractiveExecutionMode::DryRun,
+            true
+        ));
+        assert!(!needs_dry_run_execute_prompt(
+            InteractiveExecutionMode::Confirm,
+            false
         ));
     }
 }
