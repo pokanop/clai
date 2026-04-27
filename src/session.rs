@@ -15,6 +15,7 @@ use crate::cli_output::{
 };
 use crate::cloud;
 use crate::config::{AppConfig, ExecutionConfig, ExecutionMode};
+#[cfg(feature = "llama")]
 use crate::engine::max_new_tokens_local;
 use crate::executor;
 use crate::host_context::HostContext;
