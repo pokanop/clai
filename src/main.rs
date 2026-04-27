@@ -493,11 +493,17 @@ fn cmd_ask(
                 clai::cli_output::eprint_model_stream_prelude();
             }
             let stream = !no_stream;
-            let r = clai::engine::complete_local_with(&path, &system, &user, 256, |piece: &str| {
-                if stream {
-                    clai::cli_output::eprint_model_stream_piece(piece);
-                }
-            });
+            let r = clai::engine::complete_local_with(
+                &path,
+                &system,
+                &user,
+                clai::engine::max_new_tokens_local(),
+                |piece: &str| {
+                    if stream {
+                        clai::cli_output::eprint_model_stream_piece(piece);
+                    }
+                },
+            );
             if stream {
                 clai::cli_output::eprint_model_stream_end();
             }
@@ -505,7 +511,12 @@ fn cmd_ask(
         }
         #[cfg(not(feature = "llama"))]
         {
-            clai::engine::complete_local_best_effort(&path, &system, &user, 256)?
+            clai::engine::complete_local_best_effort(
+                &path,
+                &system,
+                &user,
+                clai::engine::max_new_tokens_local(),
+            )?
         }
     };
 

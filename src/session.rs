@@ -15,6 +15,7 @@ use crate::cli_output::{
 };
 use crate::cloud;
 use crate::config::{AppConfig, ExecutionConfig, ExecutionMode};
+use crate::engine::max_new_tokens_local;
 use crate::executor;
 use crate::host_context::HostContext;
 use crate::interactive_mode::{
@@ -268,12 +269,12 @@ pub fn run_interactive_session(
                 };
                 let out: Result<String> = match local_session.as_mut() {
                     Some(ls) => ls
-                        .complete(system_prompt, &user, 256, on_token)
+                        .complete(system_prompt, &user, max_new_tokens_local(), on_token)
                         .map_err(crate::AppError::Msg),
                     None => match crate::engine::LocalLlamaSession::open(&path) {
                         Ok(mut ls) => {
                             let r = ls
-                                .complete(system_prompt, &user, 256, on_token)
+                                .complete(system_prompt, &user, max_new_tokens_local(), on_token)
                                 .map_err(crate::AppError::Msg);
                             local_session = Some(ls);
                             r
