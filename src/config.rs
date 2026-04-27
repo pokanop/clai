@@ -7,6 +7,7 @@ use figment::{
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, Result};
+use crate::interactive_mode::InteractiveExecutionMode;
 
 /// Bump when automatic migrations are required.
 pub const CONFIG_VERSION_LATEST: u32 = 1;
@@ -73,6 +74,18 @@ pub struct AppConfig {
     /// default output (see `--no-preview`).
     #[serde(default)]
     pub ask_no_preview: bool,
+
+    /// Default interactive session execution behavior (overridable by env / CLI; see README).
+    #[serde(default)]
+    pub interactive: InteractiveSection,
+}
+
+/// Config table `[interactive]` / env `CLAI_INTERACTIVE__EXECUTION`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct InteractiveSection {
+    /// When set, authoritative for interactive mode when no CLI override applies.
+    #[serde(default)]
+    pub execution: Option<InteractiveExecutionMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -138,6 +151,7 @@ impl Default for AppConfig {
             ask_verbose: false,
             ask_force_capture: false,
             ask_no_preview: false,
+            interactive: InteractiveSection::default(),
         }
     }
 }
