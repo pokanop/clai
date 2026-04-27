@@ -66,7 +66,8 @@ impl JobHandle {
     }
 
     fn terminate(&self, exit_code: u32) -> std::io::Result<()> {
-        unsafe { TerminateJobObject(self.0, exit_code).ok() }
+        unsafe { TerminateJobObject(self.0, exit_code)? };
+        Ok(())
     }
 }
 
