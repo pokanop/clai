@@ -79,9 +79,14 @@ mod unix {
     /// that note (see README).
     #[test]
     fn capture_stdout_non_utf8_is_lossy() {
+        // Use Python to emit raw bytes: `sh` on Linux is often dash, whose printf does not treat
+        // `\xff` as a byte (it prints ASCII backslashes), so lossy decode would never see U+FFFD.
         let p = CommandProposal {
-            program: "sh".to_string(),
-            args: vec!["-c".to_string(), "printf '\\xff\\xfe\\n'".to_string()],
+            program: "python3".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "import sys; sys.stdout.buffer.write(b'\\xff\\xfe\\n')".to_string(),
+            ],
             cwd: None,
             reason: None,
             needs_shell: false,
