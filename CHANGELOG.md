@@ -6,6 +6,8 @@
 
 - **Default TTY entrypoint:** `clai` with no subcommand (or `clai interactive`) starts an interactive line loop when stdin **and** stdout are TTYs; non-TTY invocations exit **2** with a hint to use `clai ask`.
 - **Warm local load:** `LocalLlamaSession` keeps one `LlamaBackend` + `LlamaModel` per process for the session; `complete_local` remains a one-shot load for `clai ask`.
+- **Optional interactive warmup:** `[interactive].local_warmup` / `CLAI_INTERACTIVE__LOCAL_WARMUP` (`off` default, or `blocking`) to load the GGUF before the first prompt; verbose local runs log distinct **loading weights** / **initializing context** / **generating** phases on stderr.
+- **Engine:** `LlamaContextParams` are built once per `LocalLlamaSession` and reused each completion (same `n_ctx`/thread cap; a new `LlamaContext` is still created per turn). See [docs/local-inference-engine.md](docs/local-inference-engine.md).
 - **Tri-state execution:** `dry-run` / `confirm` / `auto` via `[interactive].execution`, `CLAI_INTERACTIVE__EXECUTION`, `--interactive-mode`, and `--yes` (forces auto + policy auto-confirm). Precedence: CLI `--yes` > `--interactive-mode` > env/config field > legacy `policy.dry_run_default` when the new key is absent.
 - **Interactive `dry-run`:** Prompts whether to execute after the pre-run presentation (default **no**), instead of never running.
 - **Pre-run presentation** module and **TTY** severity helpers (`NO_COLOR` respected).

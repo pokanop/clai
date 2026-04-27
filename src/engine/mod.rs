@@ -1,9 +1,9 @@
-//! Local inference: embedded llama.cpp when `llama` feature is enabled.
+//! Local inference: embedded llama.cpp when `llama-embed` is enabled (default `llama` or a GPU backend).
 
-#[cfg(feature = "llama")]
+#[cfg(feature = "llama-embed")]
 mod llama;
 
-#[cfg(feature = "llama")]
+#[cfg(feature = "llama-embed")]
 pub use llama::{complete_local, complete_local_with, LocalLlamaSession};
 
 use crate::error::{AppError, Result};
@@ -31,15 +31,17 @@ pub fn complete_local_best_effort(
     user: &str,
     max_tokens: i32,
 ) -> Result<String> {
-    #[cfg(feature = "llama")]
+    #[cfg(feature = "llama-embed")]
     {
         complete_local(model_path, system, user, max_tokens).map_err(AppError::Msg)
     }
-    #[cfg(not(feature = "llama"))]
+    #[cfg(not(feature = "llama-embed"))]
     {
         let _ = (model_path, system, user, max_tokens);
         Err(AppError::Msg(
-            "clai was built without `llama`; rebuild with default features".into(),
+            "clai was built without embedded local inference; rebuild with default features or \
+             `--features llama-metal` / `llama-cuda` / `llama-vulkan` as appropriate"
+                .into(),
         ))
     }
 }

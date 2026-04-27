@@ -104,12 +104,27 @@ pub struct ModelsSection {
     pub extra: Vec<ExtraModelEntry>,
 }
 
-/// Config table `[interactive]` / env `CLAI_INTERACTIVE__EXECUTION`.
+/// When to load the local GGUF in an interactive **local** session (see README).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LocalWarmupMode {
+    /// Lazy load on the first line that runs local inference (historical default).
+    #[default]
+    Off,
+    /// Load the model after the session banner, before the first `clai>` prompt.
+    Blocking,
+}
+
+/// Config table `[interactive]` / env `CLAI_INTERACTIVE__EXECUTION`, `CLAI_INTERACTIVE__LOCAL_WARMUP`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct InteractiveSection {
     /// When set, authoritative for interactive mode when no CLI override applies.
     #[serde(default)]
     pub execution: Option<InteractiveExecutionMode>,
+    /// Optional eager load of the GGUF at session start in local + embedded-llama mode. Default: off
+    /// until product benchmarks; use `off` for low-memory machines or non-interactive automation.
+    #[serde(default)]
+    pub local_warmup: LocalWarmupMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -348,4 +363,29 @@ pub fn load_config_raw(path: Option<PathBuf>) -> Result<AppConfig> {
         .merge(Env::prefixed("CLAI_").split("__"))
         .extract()
         .map_err(AppError::Config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn local_warmup_parses_from_toml_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path().join("config.toml");
+        let mut f = std::fs::File::create(&p).expect("file");
+        f.write_all(b"config_version = 1\n[interactive]\nlocal_warmup = \"blocking\"\n")
+            .expect("write");
+        let c = AppConfig::load(Some(p)).expect("load");
+        assert_eq!(c.interactive.local_warmup, LocalWarmupMode::Blocking);
+    }
+
+    #[test]
+    fn default_local_warmup_is_off() {
+        assert_eq!(
+            AppConfig::default().interactive.local_warmup,
+            LocalWarmupMode::Off
+        );
+    }
 }

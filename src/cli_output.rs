@@ -413,7 +413,12 @@ pub fn print_pre_run(proposal: &CommandProposal, decision: &PolicyDecision) {
     println!();
 }
 
-fn session_start_plain(effective: InteractiveExecutionMode, source: &str, model_line: &str) {
+fn session_start_plain(
+    effective: InteractiveExecutionMode,
+    source: &str,
+    model_line: &str,
+    local_hint: Option<&str>,
+) {
     crate::tty::println_labeled(
         "clai",
         &format!(
@@ -423,12 +428,20 @@ fn session_start_plain(effective: InteractiveExecutionMode, source: &str, model_
         crate::tty::Severity::Info,
     );
     println!("{model_line}");
+    if let Some(h) = local_hint {
+        println!("{h}");
+    }
 }
 
-/// Interactive session header (banner + model).
-pub fn print_session_start(effective: InteractiveExecutionMode, source: &str, model_line: &str) {
+/// Interactive session header (banner + model). `local_hint` documents local load / warmup when `source` is local.
+pub fn print_session_start(
+    effective: InteractiveExecutionMode,
+    source: &str,
+    model_line: &str,
+    local_hint: Option<&str>,
+) {
     if !out_style() {
-        session_start_plain(effective, source, model_line);
+        session_start_plain(effective, source, model_line, local_hint);
         return;
     }
     let mode = effective.as_str();
@@ -448,6 +461,9 @@ pub fn print_session_start(effective: InteractiveExecutionMode, source: &str, mo
         model_line
     };
     cli_kv("Model", ml);
+    if let Some(h) = local_hint {
+        println!("  {}", Style::new().dim().apply_to(h));
+    }
     println!();
 }
 
@@ -467,7 +483,7 @@ fn session_help_plain(effective: InteractiveExecutionMode) {
 Built-ins:
   help          Show this help
   exit, quit    End the session
-  reload        Reload local GGUF from disk (local sessions only; `llama` feature)
+  reload        Reload local GGUF from disk (local sessions only; embedded llama.cpp)
 
 Execution modes (effective this session: {}):
   dry-run       Ask before run; default is not to execute (config/CLI/env; see README)
@@ -475,6 +491,7 @@ Execution modes (effective this session: {}):
   auto          Run after presentation (still honors sensitive policy confirm unless --yes)
 
 Overrides: CLI > env > config > built-in default. Env: CLAI_INTERACTIVE__EXECUTION=dry-run|confirm|auto
+Local warmup: [interactive] local_warmup = off | blocking, or CLAI_INTERACTIVE__LOCAL_WARMUP (local + embedded llama.cpp only; default off).
 Global flags: --interactive-mode, --yes (forces auto + policy auto-confirm), --cloud
 
 Ctrl+C: cancels the current request; use exit/quit or EOF to leave the session.
@@ -493,7 +510,7 @@ pub fn print_session_help_styled(effective: InteractiveExecutionMode) {
     for (cmd, desc) in [
         ("help", "Show this help"),
         ("exit, quit", "End the session"),
-        ("reload", "Reload local GGUF (local + `llama` feature)"),
+        ("reload", "Reload local GGUF (local + embedded llama.cpp)"),
     ] {
         println!(
             "  {}  {}",
@@ -529,7 +546,7 @@ pub fn print_session_help_styled(effective: InteractiveExecutionMode) {
     println!(
         "  {}",
         Style::new().dim().apply_to(
-            "Config: CLAI_INTERACTIVE__EXECUTION · Global: --interactive-mode, --yes, --cloud"
+            "Config: CLAI_INTERACTIVE__EXECUTION, CLAI_INTERACTIVE__LOCAL_WARMUP · Global: --interactive-mode, --yes, --cloud"
         ),
     );
     println!();
@@ -591,7 +608,7 @@ pub fn print_doctor_report(
     model_path: Result<String, String>,
     clai_n_gpu_layers: Option<&str>,
     clai_json_schema_grammar: Option<&str>,
-    llama_feature: bool,
+    local_inference_enabled: bool,
 ) {
     cli_intro("clai doctor", "environment this install will use");
 
@@ -694,12 +711,15 @@ pub fn print_doctor_report(
     }
 
     cli_section("Build");
-    if llama_feature {
-        cli_kv("Local inference", "enabled (llama / embedded llama.cpp)");
+    if local_inference_enabled {
+        cli_kv(
+            "Local inference",
+            "enabled (embedded llama.cpp — CPU or GPU per build flags)",
+        );
     } else {
         cli_kv(
             "Local inference",
-            "disabled (built without `llama`; cloud or stubs only)",
+            "disabled (built without `llama-embed`; use default features or a backend such as `llama-metal`)",
         );
     }
 

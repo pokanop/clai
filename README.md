@@ -60,16 +60,44 @@ clai ask --print-only "list files in the current directory"
 
 - **Config file:** TOML. **Unix (incl. macOS):** `~/.config/clai/config.toml` or `$XDG_CONFIG_HOME/clai/config.toml`. **Windows:** under `%APPDATA%` (e.g. `…\AppData\Roaming\clai\config.toml`). **macOS:** if that path has no file yet, `~/Library/Application Support/clai/config.toml` is still read. **Data dir:** `~/.local/share/clai` on Unix (`$XDG_DATA_HOME/clai` if set); on Windows, `%LOCALAPPDATA%\clai`. **Override path:** `clai --config <path>`. For exact values on your machine, run `clai doctor`.
 - **Env:** any `CLAI_*` key merges with the file (see `[.env.example](.env.example)`). Hugging Face token, cloud, registry URL, and self-update overrides are set there.
+- **Interactive + local (GGUF):** optional eager load at session start: `[interactive]` table, key `local_warmup` = `off` (default) or `blocking`, or `CLAI_INTERACTIVE__LOCAL_WARMUP=off|blocking`. Use `off` on memory-constrained hosts or when you want a fast-to-prompt session shell; use `blocking` to pay load time before the first `clai>` line.
 
 ## Interactive session
 
-If **stdin and stdout are both TTYs**, running `clai` with **no subcommand** (or `clai interactive`) starts a line-oriented loop: each line is like `clai ask` text. Built-ins: `help`, `exit` / `quit`, `reload` (reloads the GGUF when using local `llama`). **Ctrl-D** ends with exit **0**.
+If **stdin and stdout are both TTYs**, running `clai` with **no subcommand** (or `clai interactive`) starts a line-oriented loop: each line is like `clai ask` text. Built-ins: `help`, `exit` / `quit`, `reload` (reloads the GGUF when using embedded local inference). **Ctrl-D** ends with exit **0**.
 
 If **either** stream is not a TTY, bare `clai` prints a hint and exits **2** (so scripts do not block).
 
 **Execution mode** for the session (after policy allows a command): `dry-run` | `confirm` | `auto`. Set in `[interactive]` in config, `CLAI_INTERACTIVE__EXECUTION`, or `--interactive-mode`. `**--yes`** forces **auto** and auto-confirms policy prompts. If `[interactive].execution` is missing, the old `policy.dry_run_default` still maps: `true` → `dry-run`, `false` → `confirm`.
 
 **Global flags** (see `clai --help`): include `--cloud`, `--verbose`, `--force-capture`, `--no-preview` — when placed *before* `ask`, they apply to `clai ask` too. `**NO_COLOR`** disables ANSI styles.
+
+### Local GGUF loading: interactive vs `clai ask`
+
+With **embedded local inference** (Cargo feature `llama-embed`, on by default via the `llama` CPU backend or explicitly via e.g. `llama-metal`), local mode loads the GGUF from disk when needed:
+
+- **Interactive session** ([`run_interactive_session`](src/session.rs)): the model is **not** loaded at startup. The first line that runs a **local** completion (after session begin) calls [`LocalLlamaSession::open`](src/engine/llama.rs) if no session exists yet, which performs the full load. **Later lines** reuse the same [`LocalLlamaSession`](src/engine/llama.rs) for the lifetime of that process—weights are not opened again for every line. The only other disk reload is the **`reload`** built-in, which re-reads the GGUF from the resolved path (or loads it if the session was still empty). Cloud mode does not use this path.
+- **`clai ask`**: each run is a **separate process**. [`complete_local_with`](src/engine/llama.rs) opens a session, completes once, and exits, so **each invocation** may pay a full cold load. For many back-to-back one-shots, prefer an interactive session or expect per-process load cost. There is no built-in cross-process model daemon in `clai` today.
+
+#### Measuring time-to-first-token (before/after changes)
+
+Use one machine, one `clai` binary (same `cargo build` or release artifact), and one GGUF path. Record the **git commit** and a short **hardware** note (CPU model, RAM, `CLAI_N_GPU_LAYERS` if any) in team notes (OQ-4) so “baseline” and “after” are comparable.
+
+1. **First line (cold or post-warmup):** in an interactive local session, use `/usr/bin/time` or a wall clock, or `date +%s%3N` in another terminal for rough ms: note the moment you press Enter on the *first* NL request until the **first** streamed character appears (if `CLAI_NO_STREAM` is unset) or until JSON/proposal text starts on stderr.
+2. **Second and later lines:** repeat for the *second* line in the same session (model already resident); compare median over several lines for steady-state.
+3. **One-shot `clai ask`:** time from process start to first token for comparison with interactive (expect full load each process unless you use cloud).
+
+Example (rough wall-clock; replace with your shell’s monotonic time if you prefer):
+
+```bash
+# Terminal A: start session (blocking warmup optional: CLAI_INTERACTIVE__LOCAL_WARMUP=blocking)
+clai
+# Type first request, then second — note delays with a stopwatch or `date` in Terminal B
+```
+
+For finer-grained phase visibility, use **`clai -v`** (or `ask_verbose` / `CLAI_ASK_VERBOSE`) in interactive or `clai ask` so local inference logs **loading weights** → **initializing context** → **generating** on stderr (no API keys).
+
+See also [docs/local-inference-engine.md](docs/local-inference-engine.md) and [docs/performance-baseline.md](docs/performance-baseline.md).
 
 ## `clai ask`
 

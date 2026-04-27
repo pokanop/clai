@@ -17,6 +17,19 @@ use llama_cpp_2::token::LlamaToken;
 use llama_cpp_2::{json_schema_to_grammar, send_logs_to_tracing, GrammarError, LogOptions};
 
 use crate::schema::CommandProposal;
+use crate::tty::{eprintln_labeled, Severity};
+
+/// Default context size and thread count for local completions (shared by session and one-shots).
+pub(crate) fn default_context_params() -> LlamaContextParams {
+    let n_ctx = NonZeroU32::new(8192).unwrap();
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(1).max(1) as i32)
+        .unwrap_or(4);
+    LlamaContextParams::default()
+        .with_n_ctx(Some(n_ctx))
+        .with_n_threads(threads)
+        .with_n_threads_batch(threads)
+}
 
 fn grammar_sampler_for_result(
     model: &LlamaModel,
@@ -65,12 +78,15 @@ fn grammar_sampler_for_result(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn complete_with_loaded_model(
     model: &LlamaModel,
     backend: &LlamaBackend,
     system: &str,
     user: &str,
     max_new_tokens: i32,
+    context_params: &LlamaContextParams,
+    verbose: bool,
     mut on_token: impl FnMut(&str),
 ) -> Result<String, String> {
     let tmpl = model
@@ -134,18 +150,16 @@ fn complete_with_loaded_model(
         LlamaSampler::chain_simple([LlamaSampler::greedy()])
     };
 
-    let n_ctx = NonZeroU32::new(8192).unwrap();
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(1).max(1) as i32)
-        .unwrap_or(4);
-
-    let ctx_params = LlamaContextParams::default()
-        .with_n_ctx(Some(n_ctx))
-        .with_n_threads(threads)
-        .with_n_threads_batch(threads);
+    if verbose {
+        eprintln_labeled(
+            "clai",
+            "local inference: initializing context (llama context + sampler)",
+            Severity::Info,
+        );
+    }
 
     let mut ctx = model
-        .new_context(backend, ctx_params)
+        .new_context(backend, context_params.clone())
         .map_err(|e| format!("context: {:?}", e))?;
 
     let tokens = model
@@ -168,6 +182,10 @@ fn complete_with_loaded_model(
 
     ctx.decode(&mut batch)
         .map_err(|e| format!("decode prompt: {:?}", e))?;
+
+    if verbose {
+        eprintln_labeled("clai", "local inference: generating tokens", Severity::Info);
+    }
 
     let mut decoder = encoding_rs::UTF_8.new_decoder();
     let mut out = String::new();
@@ -206,7 +224,7 @@ pub fn complete_local(
     user: &str,
     max_new_tokens: i32,
 ) -> Result<String, String> {
-    complete_local_with(model_path, system, user, max_new_tokens, |_| {})
+    complete_local_with(model_path, system, user, max_new_tokens, false, |_| {})
 }
 
 /// Like [`complete_local`], with a callback for each decoded piece (e.g. TTY stream).
@@ -215,25 +233,36 @@ pub fn complete_local_with<F: FnMut(&str)>(
     system: &str,
     user: &str,
     max_new_tokens: i32,
+    verbose: bool,
     on_token: F,
 ) -> Result<String, String> {
     send_logs_to_tracing(LogOptions::default().with_logs_enabled(false));
-    let mut s = LocalLlamaSession::open(model_path)?;
-    s.complete(system, user, max_new_tokens, on_token)
+    let mut s = LocalLlamaSession::open(model_path, verbose)?;
+    s.complete(system, user, max_new_tokens, verbose, on_token)
 }
 
 /// Session-scoped local inference: **one** backend + model load; subsequent [`complete`](Self::complete)
-/// calls reuse the loaded weights (NFR-1).
+/// calls reuse the loaded weights (NFR-1). Context parameters are built once and reused for each
+/// completion to avoid redundant per-turn thread sizing.
 pub struct LocalLlamaSession {
     backend: LlamaBackend,
     model: LlamaModel,
     model_path: PathBuf,
+    context_params: LlamaContextParams,
 }
 
 impl LocalLlamaSession {
-    /// Load GGUF from disk (full cold start).
-    pub fn open(model_path: &Path) -> Result<Self, String> {
+    /// Load GGUF from disk (full cold start). With `verbose`, logs a distinct **loading weights**
+    /// phase (no API keys; suitable for support triage).
+    pub fn open(model_path: &Path, verbose: bool) -> Result<Self, String> {
         send_logs_to_tracing(LogOptions::default().with_logs_enabled(false));
+        if verbose {
+            eprintln_labeled(
+                "clai",
+                "local inference: loading model weights (GGUF from disk)",
+                Severity::Info,
+            );
+        }
         let backend = LlamaBackend::init().map_err(|e| format!("backend: {:?}", e))?;
 
         let n_gpu = std::env::var("CLAI_N_GPU_LAYERS")
@@ -249,6 +278,7 @@ impl LocalLlamaSession {
             backend,
             model,
             model_path: model_path.to_path_buf(),
+            context_params: default_context_params(),
         })
     }
 
@@ -262,6 +292,7 @@ impl LocalLlamaSession {
         let model_params = pin!(LlamaModelParams::default().with_n_gpu_layers(n_gpu));
         self.model = LlamaModel::load_from_file(&self.backend, &self.model_path, &model_params)
             .map_err(|e| format!("reload model: {:?}", e))?;
+        self.context_params = default_context_params();
         Ok(())
     }
 
@@ -274,15 +305,32 @@ impl LocalLlamaSession {
         system: &str,
         user: &str,
         max_new_tokens: i32,
+        verbose: bool,
         on_token: F,
     ) -> Result<String, String> {
+        let ctxp = &self.context_params;
         complete_with_loaded_model(
             &self.model,
             &self.backend,
             system,
             user,
             max_new_tokens,
+            ctxp,
+            verbose,
             on_token,
         )
+    }
+}
+
+#[cfg(all(test, feature = "llama-embed"))]
+mod tests {
+    use std::num::NonZeroU32;
+
+    use super::default_context_params;
+
+    #[test]
+    fn default_context_params_uses_expected_n_ctx() {
+        let p = default_context_params();
+        assert_eq!(p.n_ctx(), NonZeroU32::new(8192));
     }
 }

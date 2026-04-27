@@ -9,13 +9,15 @@ use crate::cli_output::{
     print_dry_run_skip_note, print_pre_run, print_proposal_json, print_run_hint,
     print_session_help_styled, print_session_start, print_verbose_run_report,
 };
-#[cfg(feature = "llama")]
+#[cfg(feature = "llama-embed")]
 use crate::cli_output::{
     eprint_model_stream_end, eprint_model_stream_piece, eprint_model_stream_prelude,
 };
 use crate::cloud;
+#[cfg(feature = "llama-embed")]
+use crate::config::LocalWarmupMode;
 use crate::config::{AppConfig, ExecutionConfig, ExecutionMode};
-#[cfg(feature = "llama")]
+#[cfg(feature = "llama-embed")]
 use crate::engine::max_new_tokens_local;
 use crate::executor;
 use crate::host_context::HostContext;
@@ -97,10 +99,78 @@ pub fn run_interactive_session(
             Err(e) => format!("model (local): (unresolved — {e})"),
         }
     };
-    print_session_start(effective, source, &model_line);
 
-    #[cfg(feature = "llama")]
+    #[cfg(feature = "llama-embed")]
     let mut local_session: Option<crate::engine::LocalLlamaSession> = None;
+
+    let session_local_note: Option<String> = {
+        #[cfg(feature = "llama-embed")]
+        {
+            if use_cloud && cfg.cloud.enabled {
+                None
+            } else {
+                match cfg.interactive.local_warmup {
+                    LocalWarmupMode::Off => Some(
+                        "Local GGUF: loads on the first line that runs inference (unless you `reload` first). \
+Set [interactive].local_warmup = \"blocking\" or CLAI_INTERACTIVE__LOCAL_WARMUP=blocking to load before the first prompt."
+                            .into(),
+                    ),
+                    LocalWarmupMode::Blocking => match resolve_model_path(&cfg, model_override.clone(), reg) {
+                        Ok(path) => {
+                            println_labeled(
+                                "clai",
+                                "Loading local model (this may take a while)…",
+                                Severity::Info,
+                            );
+                            match crate::engine::LocalLlamaSession::open(&path, false) {
+                                Ok(s) => {
+                                    local_session = Some(s);
+                                    Some(
+                                        "Local model loaded at session start; one load per session until `reload` or exit."
+                                            .into(),
+                                    )
+                                }
+                                Err(e) => {
+                                    eprintln_labeled(
+                                        "warn",
+                                        &format!(
+                                            "Warmup failed ({e}); the model will load on first use instead."
+                                        ),
+                                        Severity::Warn,
+                                    );
+                                    Some(
+                                        "Warmup failed; the GGUF will load on the first local line."
+                                            .into(),
+                                    )
+                                }
+                            }
+                        }
+                        Err(e) => Some(format!(
+                            "Model path not resolved ({e}); fix config before local inference."
+                        )),
+                    },
+                }
+            }
+        }
+        #[cfg(not(feature = "llama-embed"))]
+        {
+            if use_cloud && cfg.cloud.enabled {
+                None
+            } else {
+                Some(
+                    "This build has no embedded llama.cpp backend; local GGUF inference is unavailable."
+                        .into(),
+                )
+            }
+        }
+    };
+
+    print_session_start(
+        effective,
+        source,
+        &model_line,
+        session_local_note.as_deref(),
+    );
 
     let stdin = io::stdin();
     let mut line = String::new();
@@ -135,7 +205,7 @@ pub fn run_interactive_session(
                     continue;
                 }
                 SessionBuiltin::Reload => {
-                    #[cfg(feature = "llama")]
+                    #[cfg(feature = "llama-embed")]
                     {
                         if use_cloud && cfg.cloud.enabled {
                             eprintln_labeled(
@@ -172,7 +242,7 @@ pub fn run_interactive_session(
                                     );
                                 }
                             }
-                            None => match crate::engine::LocalLlamaSession::open(&path) {
+                            None => match crate::engine::LocalLlamaSession::open(&path, false) {
                                 Ok(s) => {
                                     local_session = Some(s);
                                     println_labeled(
@@ -191,11 +261,11 @@ pub fn run_interactive_session(
                             },
                         }
                     }
-                    #[cfg(not(feature = "llama"))]
+                    #[cfg(not(feature = "llama-embed"))]
                     {
                         eprintln_labeled(
                             "warn",
-                            "reload requires a build with the `llama` feature.",
+                            "reload requires a build with embedded local inference (default `llama` or e.g. `llama-metal`).",
                             Severity::Warn,
                         );
                     }
@@ -250,8 +320,9 @@ pub fn run_interactive_session(
                 }
             }
         } else {
-            #[cfg(feature = "llama")]
+            #[cfg(feature = "llama-embed")]
             {
+                let phase_verbose = verbose_cli || cfg.ask_verbose;
                 let path = match resolve_model_path(&cfg, model_override.clone(), reg) {
                     Ok(p) => p,
                     Err(e) => {
@@ -270,18 +341,39 @@ pub fn run_interactive_session(
                 };
                 let out: Result<String> = match local_session.as_mut() {
                     Some(ls) => ls
-                        .complete(system_prompt, &user, max_new_tokens_local(), on_token)
+                        .complete(
+                            system_prompt,
+                            &user,
+                            max_new_tokens_local(),
+                            phase_verbose,
+                            on_token,
+                        )
                         .map_err(crate::AppError::Msg),
-                    None => match crate::engine::LocalLlamaSession::open(&path) {
-                        Ok(mut ls) => {
-                            let r = ls
-                                .complete(system_prompt, &user, max_new_tokens_local(), on_token)
-                                .map_err(crate::AppError::Msg);
-                            local_session = Some(ls);
-                            r
+                    None => {
+                        if !phase_verbose {
+                            println_labeled(
+                                "clai",
+                                "Loading local model (this may take a while)…",
+                                Severity::Info,
+                            );
                         }
-                        Err(e) => Err(crate::AppError::Msg(e)),
-                    },
+                        match crate::engine::LocalLlamaSession::open(&path, phase_verbose) {
+                            Ok(mut ls) => {
+                                let r = ls
+                                    .complete(
+                                        system_prompt,
+                                        &user,
+                                        max_new_tokens_local(),
+                                        phase_verbose,
+                                        on_token,
+                                    )
+                                    .map_err(crate::AppError::Msg);
+                                local_session = Some(ls);
+                                r
+                            }
+                            Err(e) => Err(crate::AppError::Msg(e)),
+                        }
+                    }
                 };
                 if stream {
                     eprint_model_stream_end();
@@ -298,11 +390,11 @@ pub fn run_interactive_session(
                     }
                 }
             }
-            #[cfg(not(feature = "llama"))]
+            #[cfg(not(feature = "llama-embed"))]
             {
                 eprintln_labeled(
                     "error",
-                    "local inference unavailable (build without `llama`).",
+                    "local inference unavailable (no embedded llama.cpp in this build).",
                     Severity::Error,
                 );
                 continue;

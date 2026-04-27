@@ -41,6 +41,8 @@ use clai::Result;
 ///
 /// On a **TTY** (stdin and stdout), running `clai` with no subcommand starts the **interactive session**
 /// (same as `clai interactive`). For automation, use `clai ask '…'` or pass a subcommand explicitly.
+/// Local sessions: optional eager GGUF load via `[interactive].local_warmup` or `CLAI_INTERACTIVE__LOCAL_WARMUP`
+/// (default off; see README).
 #[derive(Parser, Debug)]
 #[command(name = "clai", version, about, subcommand_required = false)]
 struct Cli {
@@ -429,7 +431,7 @@ fn cmd_doctor(config_path: Option<PathBuf>, model_override: Option<PathBuf>) -> 
         model_path,
         std::env::var("CLAI_N_GPU_LAYERS").ok().as_deref(),
         std::env::var("CLAI_JSON_SCHEMA_GRAMMAR").ok().as_deref(),
-        cfg!(feature = "llama"),
+        cfg!(feature = "llama-embed"),
     );
     Ok(())
 }
@@ -487,8 +489,9 @@ fn cmd_ask(
         )?
     } else {
         let path = resolve_model_path(&cfg, model_override, &reg)?;
-        #[cfg(feature = "llama")]
+        #[cfg(feature = "llama-embed")]
         {
+            let phase_verbose = verbose || cfg.ask_verbose;
             if !no_stream {
                 clai::cli_output::eprint_model_stream_prelude();
             }
@@ -498,6 +501,7 @@ fn cmd_ask(
                 &system,
                 &user,
                 clai::engine::max_new_tokens_local(),
+                phase_verbose,
                 |piece: &str| {
                     if stream {
                         clai::cli_output::eprint_model_stream_piece(piece);
@@ -509,7 +513,7 @@ fn cmd_ask(
             }
             r.map_err(clai::AppError::Msg)?
         }
-        #[cfg(not(feature = "llama"))]
+        #[cfg(not(feature = "llama-embed"))]
         {
             clai::engine::complete_local_best_effort(
                 &path,

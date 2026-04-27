@@ -10,11 +10,13 @@ default-run = "clai"
 
 [features]
 default = ["llama"]
-# Embedded llama.cpp (requires CMake + Clang). Disable for CI: cargo test --no-default-features
-llama = ["dep:llama-cpp-2", "llama-cpp-2/openmp"]
-llama-metal = ["dep:llama-cpp-2", "llama-cpp-2/metal"]
-llama-cuda = ["dep:llama-cpp-2", "llama-cpp-2/cuda"]
-llama-vulkan = ["dep:llama-cpp-2", "llama-cpp-2/vulkan"]
+# `llama-embed` enables the Rust local engine module; each backend links llama-cpp-2 with the right flags.
+# CI: `cargo test --no-default-features` (no embedded llama.cpp).
+llama-embed = []
+llama = ["llama-embed", "dep:llama-cpp-2", "llama-cpp-2/openmp"]
+llama-metal = ["llama-embed", "dep:llama-cpp-2", "llama-cpp-2/metal"]
+llama-cuda = ["llama-embed", "dep:llama-cpp-2", "llama-cpp-2/cuda"]
+llama-vulkan = ["llama-embed", "dep:llama-cpp-2", "llama-cpp-2/vulkan"]
 # Use native TLS for corporate proxies
 native-tls = ["hf-hub/native-tls", "ureq/native-tls"]
 
