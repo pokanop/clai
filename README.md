@@ -35,9 +35,12 @@ Shared or heavily loaded CI hosts can be noisy; if this test fails intermittentl
 cargo run -- doctor
 cargo run -- init
 cargo run -- models list
+cargo run -- models list -v   # Hugging Face repo + GGUF filename
 cargo run -- models pull balanced-qwen25-coder-7b-q4
 cargo run -- ask --print-only "list files in the current directory"
 ```
+
+**Models:** the embedded catalog lists many **Q4_K_M** GGUFs (pull downloads via Hugging Face). Run **`clai models update-registry`** to refresh from the repo (or set **`CLAI_REGISTRY_URL`**). Add **`[[models.extra]]`** tables in `config.toml` for any other HF repo/file pair (same shape as `assets/registry.json`). **`clai models ollama`** shows tags from a local Ollama daemon for side-by-side discovery; clai still loads `.gguf` files itself unless you use **`model_path`** or cloud mode.
 
 ### Interactive session (bare `clai` on a TTY)
 

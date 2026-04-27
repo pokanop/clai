@@ -181,10 +181,16 @@ pub struct ModelCatalogRow {
     pub profile: String,
     pub location: String,
     pub is_default: bool,
+    pub hf_repo: String,
+    pub filename: String,
+    pub ram_hint_gb: Option<u32>,
 }
 
-pub fn print_models_list(rows: &[ModelCatalogRow]) {
-    cli_intro("clai models · list", "registry entries and local files");
+pub fn print_models_list(rows: &[ModelCatalogRow], verbose: bool) {
+    cli_intro(
+        "clai models · list",
+        "GGUF catalog (Hugging Face) and files on disk — use --verbose for repo + filename",
+    );
     cli_section("Catalog");
     if rows.is_empty() {
         cli_note("No models in the merged registry.");
@@ -204,9 +210,57 @@ pub fn print_models_list(rows: &[ModelCatalogRow]) {
         }
         cli_kv("Name", &r.display_name);
         cli_kv("Profile", &r.profile);
+        if let Some(gb) = r.ram_hint_gb {
+            cli_kv("RAM (approx.)", &format!("{gb} GB system RAM hint"));
+        }
         cli_kv("Location", &r.location);
+        if verbose {
+            cli_kv("Hugging Face repo", &r.hf_repo);
+            cli_kv("GGUF filename", &r.filename);
+        }
         println!();
     }
+    cli_section("Discover & configure");
+    cli_note("Download a catalog entry: clai models pull <id>");
+    cli_note(
+        "Refresh catalog from the network: clai models update-registry (or CLAI_REGISTRY_URL=…)",
+    );
+    cli_note(
+        "Add your own HF GGUF rows: [[models.extra]] in config.toml (same fields as registry.json)",
+    );
+    cli_note("Use any local file: set model_path = \"/path/to/model.gguf\" in config (bypasses catalog ids)");
+    cli_note("Cloud completions: [cloud] in config, then clai --cloud …");
+    cli_note("See also a local Ollama install: clai models ollama");
+    println!();
+}
+
+pub fn print_models_ollama(host: &str, rows: &[(String, Option<u64>)]) {
+    cli_intro(
+        "clai models · ollama",
+        "tags reported by the Ollama HTTP API (not managed by clai pull)",
+    );
+    cli_kv("API base", host);
+    cli_section("Ollama models");
+    if rows.is_empty() {
+        cli_note("No models returned (is `ollama serve` running?)");
+    } else {
+        for (name, size) in rows {
+            let detail = size
+                .map(|b| {
+                    format!(
+                        " ({:.1} GiB on disk)",
+                        b as f64 / (1024.0 * 1024.0 * 1024.0)
+                    )
+                })
+                .unwrap_or_default();
+            cli_kv(name, &format!("ollama tag{detail}"));
+        }
+    }
+    println!();
+    cli_section("Note");
+    cli_note("clai local inference loads GGUF files directly (this list is for discovery only).");
+    cli_note("To use Ollama as the runtime, run models via ollama; clai does not call Ollama for inference today.");
+    println!();
 }
 
 pub fn print_models_search(query: &str, hits: &[(&str, &str)]) {
@@ -219,6 +273,9 @@ pub fn print_models_search(query: &str, hits: &[(&str, &str)]) {
             cli_kv(id, name);
         }
     }
+    println!();
+    cli_section("Tip");
+    cli_note("Try `clai models list -v` for full entries, or add [[models.extra]] if your GGUF is not in the catalog.");
     println!();
 }
 
@@ -256,6 +313,8 @@ pub fn print_init_done(config_path: &str, default_model_id: &str) {
     cli_note(&format!(
         "Download the model: clai models pull {default_model_id}"
     ));
+    cli_note("Browse all catalog ids: clai models list  (add -v for Hugging Face repo + filename)");
+    cli_note("Optional: clai models update-registry  ·  clai models ollama  ·  [[models.extra]] in config");
     println!();
 }
 
