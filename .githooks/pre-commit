@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+if [ ! -f Cargo.toml ]; then
+	exit 0
+fi
+
+cargo fmt
+
+# Re-stage sources rustfmt rewrote so this commit records formatted content.
+changed="$(git diff --name-only -- '*.rs' || true)"
+if [ -n "$changed" ]; then
+	printf '%s\n' "$changed" | while IFS= read -r path; do
+		[ -n "$path" ] && git add -- "$path"
+	done
+	printf '%s\n' "pre-commit: rustfmt updated Rust sources; they were re-staged for this commit." >&2
+fi

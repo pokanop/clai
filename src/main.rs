@@ -15,7 +15,6 @@ use clai::cli_output::{
     print_models_registry_updated, print_models_rm, print_models_search, print_pre_run,
     print_proposal_json, print_run_hint, print_verbose_run_report, ModelCatalogRow,
 };
-use clai::tty::{eprintln_labeled, println_labeled, Severity};
 use clai::cloud;
 use clai::config::{
     self, default_config_path, default_data_dir, default_models_dir, default_registry_cache_path,
@@ -34,6 +33,7 @@ use clai::schema::CommandProposal;
 use clai::stream_strategy::{
     current_user_terminal_context, select_stream_strategy, OutputIntent, StreamStrategy,
 };
+use clai::tty::{eprintln_labeled, println_labeled, Severity};
 use clai::Result;
 
 /// Natural-language → local command (embedded GGUF optional).
@@ -494,11 +494,7 @@ fn cmd_ask(
             .prompt()
             .map_err(|e| clai::AppError::Msg(e.to_string()))?;
         if !ok {
-            println_labeled(
-                "clai",
-                "Aborted (confirmation declined).",
-                Severity::Warn,
-            );
+            println_labeled("clai", "Aborted (confirmation declined).", Severity::Warn);
             std::process::exit(CLAI_ASK_USER_DECLINED_EXIT);
         }
     }

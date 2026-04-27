@@ -15,6 +15,8 @@ cargo build --release
 - **NVIDIA (Linux/Windows):** `cargo build --release --no-default-features --features llama-cuda`
 - **Vulkan:** `cargo build --release --no-default-features --features llama-vulkan`
 
+**Git hooks:** run `./scripts/install-git-hooks.sh` once per clone. The `pre-commit` hook runs `cargo fmt` and re-stages changed `.rs` files so each commit includes rustfmt output.
+
 Corporate TLS issues: add `--features native-tls` (see `Cargo.toml`).
 
 ### Performance (NFR-2)
