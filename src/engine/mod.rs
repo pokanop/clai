@@ -10,7 +10,7 @@ use crate::error::{AppError, Result};
 
 /// Default cap on generated tokens for local NL→command (`ask`, interactive). Small limits truncate
 /// long `args` or `reason` text and produce unparseable JSON; override with `CLAI_MAX_NEW_TOKENS`.
-pub const DEFAULT_MAX_NEW_TOKENS: i32 = 1024;
+pub const DEFAULT_MAX_NEW_TOKENS: i32 = 4096;
 
 /// Effective max new tokens for local completion, from `CLAI_MAX_NEW_TOKENS` (positive, capped) or
 /// [`DEFAULT_MAX_NEW_TOKENS`].
