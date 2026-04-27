@@ -17,17 +17,13 @@ pub struct PreparedCommand {
 
 /// Strip script fields and append the temp script path to argv when `script_body` is set.
 pub fn prepare_command_proposal(
-    proposal: CommandProposal,
+    mut proposal: CommandProposal,
     tooling: &ToolingConfig,
 ) -> Result<PreparedCommand> {
+    proposal.normalize_empty_script_fields();
+
     let body = match &proposal.script_body {
-        Some(b) if !b.is_empty() => b.clone(),
-        Some(_) => {
-            return Err(AppError::Msg(
-                "script_body was set but empty — omit script_body or provide UTF-8 script text"
-                    .into(),
-            ));
-        }
+        Some(b) => b.clone(),
         None => {
             return Ok(PreparedCommand {
                 proposal,
@@ -177,5 +173,28 @@ mod tests {
             script_extension: None,
         };
         assert!(prepare_command_proposal(p, &tooling).is_err());
+    }
+
+    #[test]
+    fn empty_script_body_is_no_script() {
+        let mut tooling = ToolingConfig::default();
+        tooling.ephemeral_scripts = true;
+
+        let p = CommandProposal {
+            program: "wc".into(),
+            args: vec!["-l".into()],
+            cwd: None,
+            reason: None,
+            needs_shell: false,
+            confidence: None,
+            script_body: Some(String::new()),
+            script_extension: Some(String::new()),
+        };
+        let prep = prepare_command_proposal(p, &tooling).expect("prep");
+        assert!(prep.temp.is_none());
+        assert!(prep.script_path.is_none());
+        assert!(prep.proposal.script_body.is_none());
+        assert!(prep.proposal.script_extension.is_none());
+        assert_eq!(prep.proposal.args, vec!["-l"]);
     }
 }

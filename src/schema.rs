@@ -73,6 +73,25 @@ pub struct CommandProposal {
 }
 
 impl CommandProposal {
+    /// Models often emit `"script_body": ""` when they only mean `program` + `args`. Treat those as
+    /// omitted so execution does not fail.
+    pub(crate) fn normalize_empty_script_fields(&mut self) {
+        if self
+            .script_body
+            .as_deref()
+            .is_some_and(|s| s.trim().is_empty())
+        {
+            self.script_body = None;
+        }
+        if self
+            .script_extension
+            .as_deref()
+            .is_some_and(|s| s.trim().is_empty())
+        {
+            self.script_extension = None;
+        }
+    }
+
     pub fn schema_json() -> &'static str {
         r##"{
   "type": "object",
@@ -98,12 +117,14 @@ impl CommandProposal {
     /// emit raw newlines or terminal escape bytes in `reason` / `args`).
     pub fn parse_from_model_text(text: &str) -> crate::error::Result<Self> {
         let t = text.trim();
-        if let Ok(p) = serde_json::from_str::<Self>(t) {
+        if let Ok(mut p) = serde_json::from_str::<Self>(t) {
+            p.normalize_empty_script_fields();
             return Ok(p);
         }
         let t_escaped = escape_unescaped_control_chars_in_json_strings(t);
         if t_escaped != t {
-            if let Ok(p) = serde_json::from_str::<Self>(&t_escaped) {
+            if let Ok(mut p) = serde_json::from_str::<Self>(&t_escaped) {
+                p.normalize_empty_script_fields();
                 return Ok(p);
             }
         }
@@ -119,7 +140,9 @@ impl CommandProposal {
         })?;
         let slice = &rest[..=end];
         let fixed = escape_unescaped_control_chars_in_json_strings(slice);
-        serde_json::from_str(&fixed).map_err(Into::into)
+        let mut p: Self = serde_json::from_str(&fixed).map_err(crate::error::AppError::from)?;
+        p.normalize_empty_script_fields();
+        Ok(p)
     }
 }
 
@@ -151,6 +174,14 @@ tail"#;
         let p = CommandProposal::parse_from_model_text(t).unwrap();
         assert_eq!(p.script_body.as_deref(), Some("print(42)"));
         assert_eq!(p.script_extension.as_deref(), Some("py"));
+    }
+
+    #[test]
+    fn parses_empty_script_body_as_omitted() {
+        let t = r#"{"program":"wc","args":["-l"],"script_body":"","script_extension":""}"#;
+        let p = CommandProposal::parse_from_model_text(t).unwrap();
+        assert!(p.script_body.is_none());
+        assert!(p.script_extension.is_none());
     }
 
     #[test]
