@@ -5,8 +5,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::cli_output::{
-    eprint_cloud_request_prelude, print_clai_prompt, print_dry_run_skip_note, print_pre_run,
-    print_run_hint, print_session_help_styled, print_session_start,
+    eprint_captured_stream_encoding_note, eprint_cloud_request_prelude, print_clai_prompt,
+    print_dry_run_skip_note, print_pre_run, print_proposal_json, print_run_hint,
+    print_session_help_styled, print_session_start, print_verbose_run_report,
 };
 #[cfg(feature = "llama")]
 use crate::cli_output::{
@@ -91,7 +92,7 @@ pub fn run_interactive_session(
     } else {
         match resolve_model_path(&cfg, model_override.clone(), reg) {
             Ok(p) => format!("model (local): {}", p.display()),
-            Err(e) => format!("model (local): (unresolved — {e:?})"),
+            Err(e) => format!("model (local): (unresolved — {e})"),
         }
     };
     print_session_start(effective, source, &model_line);
@@ -319,7 +320,7 @@ pub fn run_interactive_session(
         let no_preview = no_preview_cli || cfg.ask_no_preview;
 
         if verbose_ask {
-            println!("Proposed: {}", serde_json::to_string_pretty(&proposal)?);
+            print_proposal_json(&proposal)?;
         }
 
         let jail = std::env::current_dir()?;
@@ -434,15 +435,15 @@ pub fn run_interactive_session(
         };
 
         if verbose_ask {
-            if let Some(ctx) = non_direct_context_verbose(&proposal, &cfg.execution)? {
-                println!("{ctx}\n");
-            }
-            println!(
-                "status: {:?}\nstdout:\n{}\nstderr:\n{}",
-                out.status, out.stdout, out.stderr
+            let ctx = non_direct_context_verbose(&proposal, &cfg.execution)?;
+            print_verbose_run_report(
+                ctx.as_deref(),
+                &format!("{:?}", out.status),
+                &out.stdout,
+                &out.stderr,
             );
             if out.stdout.contains('\u{FFFD}') || out.stderr.contains('\u{FFFD}') {
-                eprintln!("note: captured output included non-UTF-8 bytes (shown as U+FFFD).");
+                eprint_captured_stream_encoding_note();
             }
         } else {
             match stream {

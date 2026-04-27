@@ -4,6 +4,8 @@ use std::io::{self, IsTerminal, Write};
 
 use console::Style;
 
+use crate::config::ExecutionMode;
+use crate::host_context::HostContext;
 use crate::interactive_mode::InteractiveExecutionMode;
 use crate::policy::PolicyDecision;
 use crate::presentation::{pre_run_lines, PreRunLine};
@@ -79,8 +81,37 @@ fn title(s: &str) -> String {
     }
 }
 
-/// Dim `key:` with bright `value` (indented).
-fn key_value(key: &str, value: &str) {
+/// Primary line for a subcommand (matches `clai doctor` / `clai models · …` style).
+pub fn cli_intro(command: &str, subtitle: &str) {
+    println!();
+    if out_style() {
+        println!(
+            "  {} {}",
+            Style::new().bold().white().apply_to(command),
+            Style::new().dim().apply_to(format!("— {subtitle}"))
+        );
+    } else {
+        println!("{command} — {subtitle}");
+    }
+}
+
+/// Section heading: `── Title` (cyan when color is enabled).
+pub fn cli_section(title_tail: &str) {
+    println!();
+    println!("{}", title(&format!("── {title_tail}")));
+}
+
+/// Dim explanatory line, indented (footnotes, hints).
+pub fn cli_note(line: &str) {
+    if out_style() {
+        println!("  {}", Style::new().dim().italic().apply_to(line));
+    } else {
+        println!("  {line}");
+    }
+}
+
+/// Dim `key:` with bright `value` (indented). Used across doctor, models, init, and pre-run.
+pub fn cli_kv(key: &str, value: &str) {
     if out_style() {
         let k = Style::new().dim().apply_to(format!("{key}:"));
         let v = Style::new().white().apply_to(value);
@@ -88,6 +119,143 @@ fn key_value(key: &str, value: &str) {
     } else {
         println!("{key}: {value}");
     }
+}
+
+/// Pretty-print proposal JSON (`--print-only`, `--verbose`, interactive verbose).
+pub fn print_proposal_json(proposal: &CommandProposal) -> crate::error::Result<()> {
+    let pretty = serde_json::to_string_pretty(proposal).map_err(crate::error::AppError::Json)?;
+    cli_section("Proposal (JSON)");
+    println!("{pretty}");
+    Ok(())
+}
+
+/// Verbose post-run block (`clai ask -v`, interactive verbose).
+pub fn print_verbose_run_report(
+    wrapper_context: Option<&str>,
+    status_line: &str,
+    stdout: &str,
+    stderr: &str,
+) {
+    if let Some(ctx) = wrapper_context {
+        if !ctx.trim().is_empty() {
+            cli_section("Execution context");
+            println!("{ctx}");
+        }
+    }
+    cli_section("Exit status");
+    println!("{status_line}");
+    cli_section("Stdout");
+    if stdout.is_empty() {
+        cli_note("(empty)");
+    } else {
+        println!("{stdout}");
+    }
+    cli_section("Stderr");
+    if stderr.is_empty() {
+        cli_note("(empty)");
+    } else {
+        println!("{stderr}");
+    }
+    println!();
+}
+
+/// stderr: encoding hint after captured streams (replacement char present).
+pub fn eprint_captured_stream_encoding_note() {
+    if !use_color_for_stream(io::stderr()) {
+        eprintln!("note: captured output contained non-UTF-8 bytes (shown as U+FFFD).");
+        return;
+    }
+    eprintln!(
+        "  {}",
+        Style::new().dim().italic().apply_to(
+            "note: captured output contained non-UTF-8 bytes (shown as U+FFFD)."
+        )
+    );
+}
+
+/// One row for `clai models list`.
+pub struct ModelCatalogRow {
+    pub id: String,
+    pub display_name: String,
+    pub profile: String,
+    pub location: String,
+    pub is_default: bool,
+}
+
+pub fn print_models_list(rows: &[ModelCatalogRow]) {
+    cli_intro("clai models · list", "registry entries and local files");
+    cli_section("Catalog");
+    if rows.is_empty() {
+        cli_note("No models in the merged registry.");
+        println!();
+        return;
+    }
+    for r in rows {
+        let header = if r.is_default {
+            format!("* {}  (default)", r.id)
+        } else {
+            format!("  {}", r.id)
+        };
+        if out_style() {
+            println!("  {}", Style::new().bold().white().apply_to(header));
+        } else {
+            println!("  {header}");
+        }
+        cli_kv("Name", &r.display_name);
+        cli_kv("Profile", &r.profile);
+        cli_kv("Location", &r.location);
+        println!();
+    }
+}
+
+pub fn print_models_search(query: &str, hits: &[(&str, &str)]) {
+    cli_intro("clai models · search", query);
+    cli_section("Matches");
+    if hits.is_empty() {
+        cli_note("No matching models.");
+    } else {
+        for (id, name) in hits {
+            cli_kv(id, name);
+        }
+    }
+    println!();
+}
+
+pub fn print_models_pull_done(model_id: &str, path: &str) {
+    cli_intro("clai models · pull", model_id);
+    cli_section("Saved");
+    cli_kv("Model file", path);
+    println!();
+}
+
+pub fn print_models_rm(path: &str) {
+    cli_intro("clai models · rm", "file removed");
+    cli_kv("Deleted", path);
+    println!();
+}
+
+pub fn print_models_registry_updated(cache_path: &str, registry_version: u32) {
+    cli_intro("clai models · update-registry", "cache written");
+    cli_kv("Cache file", cache_path);
+    cli_kv("Registry format version", &registry_version.to_string());
+    println!();
+}
+
+pub fn print_models_default_set(model_id: &str, config_path: &str) {
+    cli_intro("clai models · default set", "configuration saved");
+    cli_kv("Default model", model_id);
+    cli_kv("Config file", config_path);
+    println!();
+}
+
+pub fn print_init_done(config_path: &str, default_model_id: &str) {
+    cli_intro("clai init", "configuration saved");
+    cli_section("Next steps");
+    cli_kv("Config file", config_path);
+    cli_note(&format!(
+        "Download the model: clai models pull {default_model_id}"
+    ));
+    println!();
 }
 
 /// Print a styled pre-run block from structured lines.
@@ -128,11 +296,11 @@ pub fn print_pre_run(proposal: &CommandProposal, decision: &PolicyDecision) {
                 blocked,
             } => {
                 if blocked {
-                    key_value("Command", &line);
+                    cli_kv("Command", &line);
                 } else if needs_shell {
-                    key_value("Shell (needs_shell)", &line);
+                    cli_kv("Shell (needs_shell)", &line);
                 } else {
-                    key_value("Run", &line);
+                    cli_kv("Run", &line);
                 }
             }
             PreRunLine::ShellRequestNote => {
@@ -147,9 +315,9 @@ pub fn print_pre_run(proposal: &CommandProposal, decision: &PolicyDecision) {
                 };
                 println!("{t}");
             }
-            PreRunLine::WorkingDir(p) => key_value("Cwd", &p),
-            PreRunLine::Intent(s) => key_value("Why", &s),
-            PreRunLine::Confidence(c) => key_value("Confidence", &c),
+            PreRunLine::WorkingDir(p) => cli_kv("Cwd", &p),
+            PreRunLine::Intent(s) => cli_kv("Why", &s),
+            PreRunLine::Confidence(c) => cli_kv("Confidence", &c),
             PreRunLine::PolicyConfirm => {
                 let t = if out_style() {
                     Style::new()
@@ -204,12 +372,9 @@ pub fn print_session_start(effective: InteractiveExecutionMode, source: &str, mo
         return;
     }
     let mode = effective.as_str();
-    let banner = format!("clai · interactive · {source} · {mode}");
-    println!();
-    println!(
-        "  {} {}",
-        Style::new().bold().magenta().apply_to("▸"),
-        Style::new().bold().white().apply_to(banner)
+    cli_intro(
+        &format!("clai · interactive · {source}"),
+        &format!("session mode: {mode}"),
     );
     println!(
         "  {}",
@@ -222,18 +387,14 @@ pub fn print_session_start(effective: InteractiveExecutionMode, source: &str, mo
     } else {
         model_line
     };
-    println!(
-        "  {} {}",
-        Style::new().dim().italic().apply_to("model:"),
-        Style::new().green().apply_to(ml)
-    );
+    cli_kv("Model", ml);
     println!();
 }
 
 /// Unstyled prompt line (so print before readline; cursor after `clai> `).
 pub fn print_clai_prompt() {
     if out_style() {
-        print!("{}", Style::new().bold().magenta().apply_to("clai> "));
+        print!("{}", Style::new().bold().white().apply_to("clai> "));
     } else {
         print!("clai> ");
     }
@@ -268,8 +429,7 @@ pub fn print_session_help_styled(effective: InteractiveExecutionMode) {
         session_help_plain(effective);
         return;
     }
-    println!();
-    println!("{}", title("── Built-ins"));
+    cli_section("Built-ins");
     for (cmd, desc) in [
         ("help", "Show this help"),
         ("exit, quit", "End the session"),
@@ -281,8 +441,7 @@ pub fn print_session_help_styled(effective: InteractiveExecutionMode) {
             Style::new().dim().apply_to(desc)
         );
     }
-    println!();
-    println!("{}", title("── Execution mode (this session)"));
+    cli_section("Execution mode (this session)");
     let m = effective.as_str();
     println!("  {}{m}", Style::new().green().apply_to("● "));
     println!(
@@ -339,4 +498,146 @@ pub fn print_run_hint(line: &str) {
     } else {
         println!("{line}");
     }
+}
+
+fn pretty_os_id(os: &str) -> String {
+    match os {
+        "macos" => "macOS".into(),
+        "linux" => "Linux".into(),
+        "windows" => "Windows".into(),
+        _ => os.to_string(),
+    }
+}
+
+fn env_option_line(name: &str, value: Option<&str>, when_unset_hint: &str) {
+    match value {
+        Some(v) if !v.is_empty() => cli_kv(name, v),
+        _ => cli_kv(name, when_unset_hint),
+    }
+}
+
+/// `clai doctor`: grouped, readable diagnostics (TTY-aware styling).
+#[allow(clippy::too_many_arguments)]
+pub fn print_doctor_report(
+    host: &HostContext,
+    registry_version: u32,
+    config_version: u32,
+    dry_run_default: bool,
+    effective_interactive: InteractiveExecutionMode,
+    interactive_from_config: Option<InteractiveExecutionMode>,
+    execution_mode: ExecutionMode,
+    docker_image: Option<&str>,
+    data_dir: &str,
+    model_path: Result<String, String>,
+    clai_n_gpu_layers: Option<&str>,
+    clai_json_schema_grammar: Option<&str>,
+    llama_feature: bool,
+) {
+    cli_intro("clai doctor", "environment this install will use");
+
+    cli_section("Host");
+    let system_line = format!(
+        "{} — {}",
+        pretty_os_id(&host.os),
+        host.os_description.trim()
+    );
+    cli_kv("System", &system_line);
+    cli_kv("Architecture", &host.arch);
+    let shell_line = match host.shell_executable_hint.as_deref() {
+        Some(path) => format!("{} ({})", host.shell_family.user_label(), path),
+        None => host.shell_family.user_label().to_string(),
+    };
+    cli_kv("Shell", &shell_line);
+    let tty = if host.is_tty {
+        "yes — stdout is a terminal"
+    } else {
+        "no — stdout is piped or redirected"
+    };
+    cli_kv("TTY (stdout)", tty);
+    cli_kv("Working directory", &host.cwd);
+    cli_kv("Path separator", &host.path_separator.to_string());
+
+    cli_section("Model catalog");
+    cli_kv("Registry format version", &registry_version.to_string());
+
+    cli_section("Configuration file");
+    cli_kv("Config schema version", &config_version.to_string());
+    cli_kv(
+        "Legacy policy.dry_run_default",
+        if dry_run_default {
+            "true (maps to interactive dry-run when [interactive].execution is unset)"
+        } else {
+            "false (maps to confirm when [interactive].execution is unset)"
+        },
+    );
+    let cfg_exec_note = match interactive_from_config {
+        Some(m) => format!("set to `{}` in config / env", m.as_str()),
+        None => "not set (see legacy line above for fallback)".to_string(),
+    };
+    cli_kv("[interactive].execution", &cfg_exec_note);
+    cli_kv(
+        "Effective interactive mode",
+        &format!(
+            "{} (config + environment only; `--yes` / `--interactive-mode` are not applied here)",
+            effective_interactive.as_str()
+        ),
+    );
+
+    cli_section("Command execution");
+    match execution_mode {
+        ExecutionMode::Direct => {
+            cli_kv("Mode", "direct — run on this machine");
+            cli_kv("Docker image", "(not used)");
+        }
+        ExecutionMode::Docker => {
+            cli_kv("Mode", "docker — run inside a container");
+            let img = docker_image
+                .filter(|s| !s.is_empty())
+                .unwrap_or("alpine:latest (default when unset)");
+            cli_kv("Docker image", img);
+        }
+        ExecutionMode::Bwrap => {
+            cli_kv("Mode", "bwrap — Bubblewrap sandbox on this machine");
+            cli_kv("Docker image", "(not used)");
+        }
+    }
+
+    cli_section("Paths");
+    cli_kv("Data directory", data_dir);
+    match model_path {
+        Ok(ref p) => cli_kv("Model file", p),
+        Err(ref e) => {
+            cli_kv("Model file", "(not resolved)");
+            cli_note(e);
+        }
+    }
+
+    cli_section("Environment overrides");
+    env_option_line(
+        "CLAI_N_GPU_LAYERS",
+        clai_n_gpu_layers,
+        "not set (backend default)",
+    );
+    match clai_json_schema_grammar {
+        Some(v) if !v.is_empty() => {
+            cli_kv("CLAI_JSON_SCHEMA_GRAMMAR", v);
+            cli_note("GBNF JSON schema sampling is enabled; some llama.cpp builds abort if this is on.");
+        }
+        _ => {
+            cli_kv("CLAI_JSON_SCHEMA_GRAMMAR", "not set (off — recommended)");
+            cli_note("Turn on only if you need schema-constrained decoding and your build supports it.");
+        }
+    }
+
+    cli_section("Build");
+    if llama_feature {
+        cli_kv("Local inference", "enabled (llama / embedded llama.cpp)");
+    } else {
+        cli_kv(
+            "Local inference",
+            "disabled (built without `llama`; cloud or stubs only)",
+        );
+    }
+
+    println!();
 }

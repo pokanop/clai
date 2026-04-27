@@ -2,6 +2,7 @@
 
 use self_update::update::ReleaseUpdate;
 
+use crate::cli_output::{cli_intro, cli_kv, cli_note, cli_section};
 use crate::error::{AppError, Result};
 
 /// `target_triple` should match release asset names (e.g. contains `x86_64-unknown-linux-gnu`).
@@ -42,19 +43,31 @@ pub fn self_update(
     if dry_run {
         let rel = ReleaseUpdate::get_latest_release(&*upd)
             .map_err(|e| AppError::Msg(format!("release: {}", e)))?;
-        println!("latest tag: {} (current {})", rel.version, current_version);
-        println!(
-            "hint: release assets should include this triple in the file name: {}",
-            target_triple.unwrap_or(env!("CLAI_BUILD_TARGET"))
-        );
+        cli_intro("clai self update", "check only (no download)");
+        cli_section("Releases");
+        cli_kv("Latest tag", &rel.version);
+        cli_kv("This binary", current_version);
+        let triple = target_triple.unwrap_or(env!("CLAI_BUILD_TARGET"));
+        cli_note(&format!(
+            "Release asset file names should include this target triple: {triple}"
+        ));
+        println!();
         return Ok(());
     }
 
     let status =
         ReleaseUpdate::update(&*upd).map_err(|e| AppError::Msg(format!("self_update: {}", e)))?;
     match status {
-        self_update::Status::UpToDate(s) => println!("already up to date: {}", s),
-        self_update::Status::Updated(s) => println!("updated to {}", s),
+        self_update::Status::UpToDate(s) => {
+            cli_intro("clai self update", "already current");
+            cli_note(&s);
+            println!();
+        }
+        self_update::Status::Updated(s) => {
+            cli_intro("clai self update", "install complete");
+            cli_note(&s);
+            println!();
+        }
     }
     Ok(())
 }

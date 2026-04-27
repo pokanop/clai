@@ -4,7 +4,7 @@ use std::path::MAIN_SEPARATOR;
 
 use serde::Serialize;
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ShellFamily {
     PosixSh,
@@ -16,6 +16,24 @@ pub enum ShellFamily {
     Cmd,
     Nu,
     Unknown,
+}
+
+impl ShellFamily {
+    /// Short label for human-facing diagnostics (`clai doctor`, etc.).
+    #[must_use]
+    pub fn user_label(self) -> &'static str {
+        match self {
+            Self::PosixSh => "POSIX sh",
+            Self::Bash => "Bash",
+            Self::Zsh => "Zsh",
+            Self::Fish => "Fish",
+            Self::PowerShell => "Windows PowerShell",
+            Self::Pwsh => "PowerShell (pwsh)",
+            Self::Cmd => "Command Prompt",
+            Self::Nu => "Nushell",
+            Self::Unknown => "Unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
