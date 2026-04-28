@@ -61,7 +61,7 @@ pub fn classify_builtin_line(trimmed: &str) -> Option<SessionBuiltin> {
 
 #[allow(clippy::too_many_arguments)]
 pub fn run_interactive_session(
-    cfg: AppConfig,
+    mut cfg: AppConfig,
     model_override: Option<PathBuf>,
     reg: &ModelRegistry,
     resolve_model_path: impl Fn(&AppConfig, Option<PathBuf>, &ModelRegistry) -> Result<PathBuf>,
@@ -448,6 +448,7 @@ Set [interactive].local_warmup = \"blocking\" or CLAI_INTERACTIVE__LOCAL_WARMUP=
             jail,
             cfg.policy.strict_allowlist,
             cfg.policy.allowlist_bins.clone(),
+            cfg.policy.trusted_programs.clone(),
         );
         let decision = policy.evaluate(&proposal);
 
@@ -474,30 +475,25 @@ Set [interactive].local_warmup = \"blocking\" or CLAI_INTERACTIVE__LOCAL_WARMUP=
             }
         }
 
-        if decision.requires_confirmation && !global_yes {
-            let ok =
-                match inquire::Confirm::new("This command is sensitive or destructive. Run it?")
-                    .with_default(false)
-                    .prompt()
-                {
-                    Ok(v) => v,
-                    Err(e) => {
-                        eprintln_labeled("error", &format!("prompt failed: {e}"), Severity::Error);
-                        continue;
-                    }
-                };
-            if !ok {
-                println_labeled(
-                    "clai",
-                    "Skipped (policy confirmation declined).",
-                    Severity::Warn,
-                );
-                continue;
+        let need_policy_confirm = decision.requires_confirmation && !global_yes;
+        let basename = crate::trusted_store::program_basename(&proposal.program);
+        let remember_run_skips = !proposal.needs_shell
+            && crate::trusted_store::trusted_list_contains(
+                &cfg.interactive.remember_run_programs,
+                &basename,
+            );
+        let base_run_prompt = needs_interactive_run_prompt(effective, global_yes);
+        let need_run_prompt = base_run_prompt && !remember_run_skips;
+        let confirm_msg = match (need_policy_confirm, need_run_prompt) {
+            (true, true) => {
+                "Run proposed command? (Policy also requires confirmation for this operation.)"
             }
-        }
-
-        if needs_interactive_run_prompt(effective, global_yes) {
-            let ok = match inquire::Confirm::new("Run proposed command?")
+            (true, false) => "This command is sensitive or destructive. Run it?",
+            (false, true) => "Run proposed command?",
+            (false, false) => "",
+        };
+        if need_policy_confirm || need_run_prompt {
+            let ok = match inquire::Confirm::new(confirm_msg)
                 .with_default(false)
                 .prompt()
             {
@@ -508,8 +504,44 @@ Set [interactive].local_warmup = \"blocking\" or CLAI_INTERACTIVE__LOCAL_WARMUP=
                 }
             };
             if !ok {
-                println_labeled("clai", "Skipped (run declined).", Severity::Info);
+                let msg = if need_policy_confirm && !need_run_prompt {
+                    "Skipped (policy confirmation declined)."
+                } else if !need_policy_confirm && need_run_prompt {
+                    "Skipped (run declined)."
+                } else {
+                    "Skipped (confirmation declined)."
+                };
+                let sev = if need_policy_confirm {
+                    Severity::Warn
+                } else {
+                    Severity::Info
+                };
+                println_labeled("clai", msg, sev);
                 continue;
+            }
+        }
+
+        if need_policy_confirm && !global_yes {
+            if let Err(e) = crate::trusted_store::prompt_and_append_trusted_if_desired(
+                &mut cfg.policy.trusted_programs,
+                &proposal.program,
+                proposal.needs_shell,
+            ) {
+                eprintln_labeled("warn", &format!("trusted_programs: {e}"), Severity::Warn);
+            }
+        }
+
+        if need_run_prompt && !global_yes {
+            if let Err(e) = crate::trusted_store::prompt_and_append_remember_run_if_desired(
+                &mut cfg.interactive.remember_run_programs,
+                &proposal.program,
+                proposal.needs_shell,
+            ) {
+                eprintln_labeled(
+                    "warn",
+                    &format!("remember_run_programs: {e}"),
+                    Severity::Warn,
+                );
             }
         }
 

@@ -20,6 +20,7 @@ pub mod runtime_tooling;
 pub mod schema;
 pub mod session;
 pub mod stream_strategy;
+pub mod trusted_store;
 pub mod tty;
 
 pub use error::{AppError, Result};

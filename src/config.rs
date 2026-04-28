@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use figment::{
     providers::{Env, Format, Toml},
@@ -153,6 +153,10 @@ pub struct InteractiveSection {
     /// until product benchmarks; use `off` for low-memory machines or non-interactive automation.
     #[serde(default)]
     pub local_warmup: LocalWarmupMode,
+    /// Interactive **confirm** mode only: basenames that skip the “Run proposed command?” prompt
+    /// (policy still applies). Populated via session “remember” prompts or by hand in config.
+    #[serde(default)]
+    pub remember_run_programs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -163,6 +167,10 @@ pub struct PolicyConfig {
     pub allowlist_bins: Vec<String>,
     #[serde(default)]
     pub strict_allowlist: bool,
+    /// Program basenames that skip the extra policy confirmation when the command is otherwise allowed
+    /// (not blocked, not `needs_shell`, not destructive). Project `clai.toml` can extend the global list.
+    #[serde(default)]
+    pub trusted_programs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,6 +221,7 @@ impl Default for AppConfig {
                 dry_run_default: true,
                 allowlist_bins: vec![],
                 strict_allowlist: false,
+                trusted_programs: vec![],
             },
             cloud: CloudConfig::default(),
             ask_verbose: false,
@@ -225,15 +234,60 @@ impl Default for AppConfig {
     }
 }
 
+/// Walk from `start` (usually cwd) up to root; collect `clai.toml` and `.clai/config.toml`.
+/// Merge order is outer directories first, then inner — last file wins (closest to cwd).
+pub fn discover_local_config_paths(start: &Path) -> Vec<PathBuf> {
+    let mut stack = Vec::new();
+    let mut cur = start.to_path_buf();
+    loop {
+        for rel in [".clai/config.toml", "clai.toml"] {
+            let p = cur.join(rel);
+            if p.is_file() {
+                stack.push(p);
+            }
+        }
+        if !cur.pop() {
+            break;
+        }
+    }
+    stack.reverse();
+    stack
+}
+
+fn config_figment_layers(global_file: Option<PathBuf>, local_files: Vec<PathBuf>) -> Figment {
+    let mut f = Figment::new();
+    if let Some(g) = global_file {
+        if g.is_file() {
+            f = f.merge(Toml::file(g));
+        }
+    }
+    for p in local_files {
+        if p.is_file() {
+            f = f.merge(Toml::file(p));
+        }
+    }
+    f.merge(Env::prefixed("CLAI_").split("__"))
+}
+
+fn build_config_figment(cli_override: Option<PathBuf>) -> Result<Figment> {
+    if let Some(p) = cli_override {
+        if !p.is_file() {
+            return Ok(Figment::new().merge(Env::prefixed("CLAI_").split("__")));
+        }
+        return Ok(Figment::new()
+            .merge(Toml::file(&p))
+            .merge(Env::prefixed("CLAI_").split("__")));
+    }
+    let global = resolve_config_path_for_read(None);
+    let global_opt = global.is_file().then_some(global);
+    let cwd = std::env::current_dir().map_err(|e| AppError::Msg(e.to_string()))?;
+    let locals = discover_local_config_paths(&cwd);
+    Ok(config_figment_layers(global_opt, locals))
+}
+
 impl AppConfig {
     pub fn load(path: Option<PathBuf>) -> Result<Self> {
-        let path = resolve_config_path_for_read(path);
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let figment = Figment::new()
-            .merge(Toml::file(&path))
-            .merge(Env::prefixed("CLAI_").split("__"));
+        let figment = build_config_figment(path)?;
         let c: AppConfig = figment.extract().map_err(AppError::Config)?;
         if c.config_version > CONFIG_VERSION_LATEST {
             return Err(AppError::Msg(format!(
@@ -383,13 +437,7 @@ pub fn installed_model_path(filename: &str) -> Option<PathBuf> {
 
 /// Merge file + env without migration guard (used by `migrate` subcommand).
 pub fn load_config_raw(path: Option<PathBuf>) -> Result<AppConfig> {
-    let path = resolve_config_path_for_read(path);
-    if !path.exists() {
-        return Ok(AppConfig::default());
-    }
-    Figment::new()
-        .merge(Toml::file(&path))
-        .merge(Env::prefixed("CLAI_").split("__"))
+    build_config_figment(path)?
         .extract()
         .map_err(AppError::Config)
 }
@@ -397,6 +445,7 @@ pub fn load_config_raw(path: Option<PathBuf>) -> Result<AppConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interactive_mode::InteractiveExecutionMode;
     use std::io::Write;
 
     #[test]
@@ -431,5 +480,59 @@ mod tests {
         assert!(!c.tooling.detect_runtimes);
         assert!(c.tooling.ephemeral_scripts);
         assert!(!c.tooling.prefer_scripts_when_available);
+    }
+
+    #[test]
+    fn interactive_remember_run_programs_parses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path().join("config.toml");
+        std::fs::write(
+            p.as_path(),
+            b"config_version = 1\n[interactive]\nexecution = \"confirm\"\nremember_run_programs = [\"ls\"]\n",
+        )
+        .expect("write");
+        let c = AppConfig::load(Some(p)).expect("load");
+        assert_eq!(c.interactive.remember_run_programs, vec!["ls".to_string()]);
+    }
+
+    #[test]
+    fn local_clai_toml_overrides_global_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let global = dir.path().join("global.toml");
+        std::fs::write(
+            global.as_path(),
+            b"config_version = 1\n[interactive]\nexecution = \"dry-run\"\n",
+        )
+        .expect("write global");
+        let local = dir.path().join("clai.toml");
+        std::fs::write(local.as_path(), b"[interactive]\nexecution = \"auto\"\n").expect("local");
+        let f = config_figment_layers(Some(global), vec![local]);
+        let c: AppConfig = f.extract().expect("extract");
+        assert_eq!(
+            c.interactive.execution,
+            Some(InteractiveExecutionMode::Auto)
+        );
+    }
+
+    #[test]
+    fn discover_local_config_paths_orders_ancestor_before_descendant() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("root");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).expect("mkdir");
+        std::fs::write(
+            root.join("clai.toml"),
+            b"[interactive]\nexecution = \"dry-run\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            sub.join("clai.toml"),
+            b"[interactive]\nexecution = \"auto\"\n",
+        )
+        .unwrap();
+        let paths = discover_local_config_paths(&sub);
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], root.join("clai.toml"));
+        assert_eq!(paths[1], sub.join("clai.toml"));
     }
 }

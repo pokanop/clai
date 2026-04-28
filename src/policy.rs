@@ -25,15 +25,33 @@ pub struct PolicyEngine {
     pub jail_root: PathBuf,
     pub strict_allowlist: bool,
     pub allowlist_bins: Vec<String>,
+    /// Basenames (e.g. `git`) that skip the policy “sensitive” confirmation when allowed — see README.
+    pub trusted_programs: Vec<String>,
 }
 
 impl PolicyEngine {
-    pub fn new(jail_root: PathBuf, strict_allowlist: bool, allowlist_bins: Vec<String>) -> Self {
+    pub fn new(
+        jail_root: PathBuf,
+        strict_allowlist: bool,
+        allowlist_bins: Vec<String>,
+        trusted_programs: Vec<String>,
+    ) -> Self {
         Self {
             jail_root,
             strict_allowlist,
             allowlist_bins,
+            trusted_programs,
         }
+    }
+
+    fn program_is_trusted(&self, program: &str) -> bool {
+        let base = Path::new(program)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(program);
+        self.trusted_programs
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(base))
     }
 
     pub fn evaluate(&self, proposal: &CommandProposal) -> PolicyDecision {
@@ -75,29 +93,57 @@ impl PolicyEngine {
 
         if let Some(tier) = sensitive_tier(&program_lower, &joined) {
             let destructive = tier == RiskTier::Destructive;
-            return PolicyDecision {
-                tier,
-                requires_confirmation: true,
-                blocked: destructive,
-                reason: None,
-            };
+            let requires_confirmation = tier != RiskTier::ReadOnly && !destructive;
+            return self.finalize(
+                proposal,
+                PolicyDecision {
+                    tier,
+                    requires_confirmation,
+                    blocked: destructive,
+                    reason: None,
+                },
+            );
         }
 
         if proposal.needs_shell {
-            return PolicyDecision {
-                tier: RiskTier::Sensitive,
-                requires_confirmation: true,
-                blocked: false,
-                reason: Some("shell execution requested".into()),
-            };
+            return self.finalize(
+                proposal,
+                PolicyDecision {
+                    tier: RiskTier::Sensitive,
+                    requires_confirmation: true,
+                    blocked: false,
+                    reason: Some("shell execution requested".into()),
+                },
+            );
         }
 
-        PolicyDecision {
-            tier: RiskTier::Standard,
-            requires_confirmation: false,
-            blocked: false,
-            reason: None,
+        self.finalize(
+            proposal,
+            PolicyDecision {
+                tier: RiskTier::Standard,
+                requires_confirmation: false,
+                blocked: false,
+                reason: None,
+            },
+        )
+    }
+
+    fn finalize(&self, proposal: &CommandProposal, mut decision: PolicyDecision) -> PolicyDecision {
+        self.apply_trusted_bypass(proposal, &mut decision);
+        decision
+    }
+
+    /// Clears `requires_confirmation` for trusted, non-destructive, direct (non-shell) proposals.
+    fn apply_trusted_bypass(&self, proposal: &CommandProposal, decision: &mut PolicyDecision) {
+        if !decision.requires_confirmation
+            || decision.blocked
+            || proposal.needs_shell
+            || decision.tier == RiskTier::Destructive
+            || !self.program_is_trusted(&proposal.program)
+        {
+            return;
         }
+        decision.requires_confirmation = false;
     }
 
     fn check_cwd_jail(&self, proposal: &CommandProposal) -> Result<(), String> {
@@ -176,7 +222,7 @@ mod tests {
 
     #[test]
     fn blocks_rm_rf_root() {
-        let eng = PolicyEngine::new(PathBuf::from("/tmp"), false, vec![]);
+        let eng = PolicyEngine::new(PathBuf::from("/tmp"), false, vec![], vec![]);
         let p = CommandProposal {
             program: "rm".into(),
             args: vec!["-rf".into(), "/".into()],
@@ -194,7 +240,7 @@ mod tests {
     #[test]
     fn cwd_jail() {
         let jail = std::env::temp_dir().join("clai_policy_jail");
-        let eng = PolicyEngine::new(jail.clone(), false, vec![]);
+        let eng = PolicyEngine::new(jail.clone(), false, vec![], vec![]);
         let outside = std::env::temp_dir().join("clai_policy_outside");
         let p = CommandProposal {
             program: "ls".into(),
@@ -212,7 +258,7 @@ mod tests {
 
     #[test]
     fn strict_allowlist_sees_final_interpreter_with_temp_path() {
-        let eng = PolicyEngine::new(PathBuf::from("/tmp"), true, vec!["python3".into()]);
+        let eng = PolicyEngine::new(PathBuf::from("/tmp"), true, vec!["python3".into()], vec![]);
         let p = CommandProposal {
             program: "python3".into(),
             args: vec!["/var/tmp/clai-script-abc/script.py".into()],
@@ -225,5 +271,60 @@ mod tests {
         };
         let d = eng.evaluate(&p);
         assert!(!d.blocked);
+    }
+
+    #[test]
+    fn read_only_programs_skip_policy_confirm() {
+        let eng = PolicyEngine::new(PathBuf::from("/tmp"), false, vec![], vec![]);
+        let p = CommandProposal {
+            program: "ls".into(),
+            args: vec!["-la".into()],
+            cwd: None,
+            reason: None,
+            needs_shell: false,
+            confidence: None,
+            script_body: None,
+            script_extension: None,
+        };
+        let d = eng.evaluate(&p);
+        assert!(!d.blocked);
+        assert!(!d.requires_confirmation);
+        assert_eq!(d.tier, RiskTier::ReadOnly);
+    }
+
+    #[test]
+    fn trusted_programs_skip_sensitive_confirm() {
+        let eng = PolicyEngine::new(PathBuf::from("/tmp"), false, vec![], vec!["chmod".into()]);
+        let p = CommandProposal {
+            program: "chmod".into(),
+            args: vec!["644".into(), "file.txt".into()],
+            cwd: None,
+            reason: None,
+            needs_shell: false,
+            confidence: None,
+            script_body: None,
+            script_extension: None,
+        };
+        let d = eng.evaluate(&p);
+        assert!(!d.blocked);
+        assert!(!d.requires_confirmation);
+    }
+
+    #[test]
+    fn trusted_list_does_not_bypass_needs_shell() {
+        let eng = PolicyEngine::new(PathBuf::from("/tmp"), false, vec![], vec!["sh".into()]);
+        let p = CommandProposal {
+            program: "sh".into(),
+            args: vec!["-c".into(), "true".into()],
+            cwd: None,
+            reason: None,
+            needs_shell: true,
+            confidence: None,
+            script_body: None,
+            script_extension: None,
+        };
+        let d = eng.evaluate(&p);
+        assert!(!d.blocked);
+        assert!(d.requires_confirmation);
     }
 }

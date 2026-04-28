@@ -117,7 +117,7 @@ fn policy_still_blocks_obvious_destructive_proposal() {
     use clai::policy::PolicyEngine;
     use std::path::PathBuf;
 
-    let eng = PolicyEngine::new(PathBuf::from("/tmp"), false, vec![]);
+    let eng = PolicyEngine::new(PathBuf::from("/tmp"), false, vec![], vec![]);
     let p = CommandProposal {
         program: "rm".into(),
         args: vec!["-rf".into(), "/".into()],

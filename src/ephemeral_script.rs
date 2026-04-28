@@ -136,8 +136,10 @@ mod tests {
 
     #[test]
     fn materializes_and_strips_body() {
-        let mut tooling = ToolingConfig::default();
-        tooling.ephemeral_scripts = true;
+        let tooling = ToolingConfig {
+            ephemeral_scripts: true,
+            ..Default::default()
+        };
 
         let p = CommandProposal {
             program: "python3".into(),
@@ -177,8 +179,10 @@ mod tests {
 
     #[test]
     fn empty_script_body_is_no_script() {
-        let mut tooling = ToolingConfig::default();
-        tooling.ephemeral_scripts = true;
+        let tooling = ToolingConfig {
+            ephemeral_scripts: true,
+            ..Default::default()
+        };
 
         let p = CommandProposal {
             program: "wc".into(),

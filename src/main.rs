@@ -457,7 +457,7 @@ fn cmd_ask(
     yes: bool,
     use_cloud: bool,
 ) -> Result<()> {
-    let cfg = load_cfg(config_path.clone())?;
+    let mut cfg = load_cfg(config_path.clone())?;
     let reg = merged_registry(config_path.clone())?;
     let host = HostContext::gather(
         cfg.preferred_shell.as_deref(),
@@ -583,6 +583,7 @@ fn cmd_ask(
         jail,
         cfg.policy.strict_allowlist,
         cfg.policy.allowlist_bins.clone(),
+        cfg.policy.trusted_programs.clone(),
     );
     let decision = policy.evaluate(&proposal);
     if verbose_ask && io::stdout().is_terminal() {
@@ -606,6 +607,15 @@ fn cmd_ask(
             discard_ephemeral_temp(&mut ephemeral_temp);
             println_labeled("clai", "Aborted (confirmation declined).", Severity::Warn);
             std::process::exit(CLAI_ASK_USER_DECLINED_EXIT);
+        }
+        if io::stdin().is_terminal() {
+            if let Err(e) = clai::trusted_store::prompt_and_append_trusted_if_desired(
+                &mut cfg.policy.trusted_programs,
+                &proposal.program,
+                proposal.needs_shell,
+            ) {
+                println_labeled("warn", &format!("trusted_programs: {e}"), Severity::Warn);
+            }
         }
     }
 
