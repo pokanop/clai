@@ -10,6 +10,8 @@ pub mod ephemeral_script;
 pub mod error;
 pub mod executor;
 pub mod host_context;
+pub mod interactive_history;
+pub mod interactive_line;
 pub mod interactive_mode;
 pub mod migrate;
 pub mod ollama;

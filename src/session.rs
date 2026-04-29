@@ -21,6 +21,10 @@ use crate::config::{AppConfig, ExecutionConfig, ExecutionMode};
 use crate::engine::max_new_tokens_local;
 use crate::executor;
 use crate::host_context::HostContext;
+use crate::interactive_history::{sanitize_history_max_entries, InteractiveHistoryStore};
+use crate::interactive_line::{
+    stdin_stdout_interactive_tty, RecordQualifyingLineOnDrop, TtyInteractiveLineEditor,
+};
 use crate::interactive_mode::{
     needs_dry_run_execute_prompt, needs_interactive_run_prompt,
     resolve_effective_interactive_execution_mode, InteractiveExecutionMode,
@@ -172,24 +176,50 @@ Set [interactive].local_warmup = \"blocking\" or CLAI_INTERACTIVE__LOCAL_WARMUP=
         session_local_note.as_deref(),
     );
 
+    let cap_entries = sanitize_history_max_entries(cfg.interactive.history_max_entries);
+    let mut tty_line = if stdin_stdout_interactive_tty() {
+        TtyInteractiveLineEditor::try_new(cap_entries)
+    } else {
+        None
+    };
+    let mut tty_plain_history_store = if stdin_stdout_interactive_tty() && tty_line.is_none() {
+        Some(InteractiveHistoryStore::new(cap_entries))
+    } else {
+        None
+    };
+
     let stdin = io::stdin();
-    let mut line = String::new();
+    let mut buffer = String::new();
     loop {
-        line.clear();
-        print_clai_prompt();
-        let n = match stdin.read_line(&mut line) {
-            Ok(n) => n,
-            Err(e) => {
-                eprintln_labeled("error", &format!("read stdin: {e}"), Severity::Error);
-                continue;
+        if let Some(ref mut tty) = tty_line {
+            buffer = match tty.read_line() {
+                Ok(None) => {
+                    println_labeled("clai", "EOF — goodbye.", Severity::Info);
+                    return Ok(());
+                }
+                Ok(Some(s)) => s,
+                Err(e) => {
+                    eprintln_labeled("error", &format!("read stdin: {e}"), Severity::Error);
+                    continue;
+                }
+            };
+        } else {
+            buffer.clear();
+            print_clai_prompt();
+            let n = match stdin.read_line(&mut buffer) {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln_labeled("error", &format!("read stdin: {e}"), Severity::Error);
+                    continue;
+                }
+            };
+            if n == 0 {
+                println_labeled("clai", "EOF — goodbye.", Severity::Info);
+                return Ok(());
             }
-        };
-        if n == 0 {
-            println_labeled("clai", "EOF — goodbye.", Severity::Info);
-            return Ok(());
         }
 
-        let trimmed = line.trim();
+        let trimmed = buffer.trim();
         if trimmed.is_empty() {
             continue;
         }
@@ -273,6 +303,12 @@ Set [interactive].local_warmup = \"blocking\" or CLAI_INTERACTIVE__LOCAL_WARMUP=
                 }
             }
         }
+
+        let _record_qualifying = RecordQualifyingLineOnDrop::new(
+            tty_line.as_mut(),
+            tty_plain_history_store.as_mut(),
+            trimmed,
+        );
 
         let user = format!(
             "User request: {}\nReply with ONLY the JSON object.",

@@ -67,6 +67,8 @@ clai ask --print-only "list files in the current directory"
 
 If **stdin and stdout are both TTYs**, running `clai` with **no subcommand** (or `clai interactive`) starts a line-oriented loop: each line is like `clai ask` text. Built-ins: `help`, `exit` / `quit`, `reload` (reloads the GGUF when using embedded local inference). **Ctrl-D** ends with exit **0**.
 
+On an interactive terminal, **`clai>` uses line editing** including **Up** / **Down** to recall previous **requests** (not built-in lines such as `help`). Only lines that reached the model are stored; consecutive duplicates are collapsed. Memory is capped (default **1000** entries, minimum **100**); use **`[interactive].history_max_entries`** or **`CLAI_INTERACTIVE__HISTORY_MAX_ENTRIES`**. Paste long lines or secrets with care—history stays in the current process unless you persist config elsewhere.
+
 If **either** stream is not a TTY, bare `clai` prints a hint and exits **2** (so scripts do not block).
 
 **Execution mode** for the session (after policy allows a command): `dry-run` | `confirm` | `auto`. Set in `[interactive]` in config, `CLAI_INTERACTIVE__EXECUTION`, or `--interactive-mode`. `**--yes`** forces **auto** and auto-confirms policy prompts. If `[interactive].execution` is missing, the old `policy.dry_run_default` still maps: `true` → `dry-run`, `false` → `confirm`.

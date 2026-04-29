@@ -7,6 +7,7 @@ use figment::{
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, Result};
+use crate::interactive_history::DEFAULT_HISTORY_MAX_ENTRIES;
 use crate::interactive_mode::InteractiveExecutionMode;
 
 /// Bump when automatic migrations are required.
@@ -144,7 +145,7 @@ pub enum LocalWarmupMode {
 }
 
 /// Config table `[interactive]` / env `CLAI_INTERACTIVE__EXECUTION`, `CLAI_INTERACTIVE__LOCAL_WARMUP`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InteractiveSection {
     /// When set, authoritative for interactive mode when no CLI override applies.
     #[serde(default)]
@@ -157,6 +158,24 @@ pub struct InteractiveSection {
     /// (policy still applies). Populated via session “remember” prompts or by hand in config.
     #[serde(default)]
     pub remember_run_programs: Vec<String>,
+    /// Max qualifying request lines recalled with Up; minimum **100**, default **1000** (`[interactive]` / `CLAI_INTERACTIVE__HISTORY_MAX_ENTRIES`).
+    #[serde(default = "interactive_history_cap_default")]
+    pub history_max_entries: usize,
+}
+
+fn interactive_history_cap_default() -> usize {
+    DEFAULT_HISTORY_MAX_ENTRIES
+}
+
+impl Default for InteractiveSection {
+    fn default() -> Self {
+        Self {
+            execution: None,
+            local_warmup: LocalWarmupMode::default(),
+            remember_run_programs: Vec::new(),
+            history_max_entries: DEFAULT_HISTORY_MAX_ENTRIES,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -465,6 +484,23 @@ mod tests {
             AppConfig::default().interactive.local_warmup,
             LocalWarmupMode::Off
         );
+    }
+
+    #[test]
+    fn interactive_history_max_entries_default_and_parse() {
+        assert_eq!(
+            AppConfig::default().interactive.history_max_entries,
+            crate::interactive_history::DEFAULT_HISTORY_MAX_ENTRIES
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path().join("config.toml");
+        std::fs::write(
+            p.as_path(),
+            b"config_version = 1\n[interactive]\nhistory_max_entries = 250\n",
+        )
+        .expect("write");
+        let c = AppConfig::load(Some(p)).expect("load");
+        assert_eq!(c.interactive.history_max_entries, 250);
     }
 
     #[test]

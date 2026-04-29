@@ -489,6 +489,11 @@ pub fn print_clai_prompt() {
     let _ = io::stdout().flush();
 }
 
+/// Styled `clai> ` ANSI fragment for readline layered prompts (same display width as `clai> `).
+pub fn styled_clai_prompt_ansi_fragment() -> Option<String> {
+    out_style().then(|| Style::new().bold().white().apply_to("clai> ").to_string())
+}
+
 fn session_help_plain(effective: InteractiveExecutionMode) {
     println!(
         "\
@@ -504,6 +509,8 @@ Execution modes (effective this session: {}):
 
 Overrides: CLI > env > config > built-in default. Env: CLAI_INTERACTIVE__EXECUTION=dry-run|confirm|auto
 Local warmup: [interactive] local_warmup = off | blocking, or CLAI_INTERACTIVE__LOCAL_WARMUP (local + embedded llama.cpp only; default off).
+TTY history: prior non-builtin request lines (not help/exit/reload) recall with Up; cap default 1000 (min 100) via [interactive] history_max_entries or CLAI_INTERACTIVE__HISTORY_MAX_ENTRIES.
+Piped / non-TTY stdin: plain line input (no Up/Down history).
 Global flags: --interactive-mode, --yes (forces auto + policy auto-confirm), --cloud
 
 Ctrl+C: cancels the current request; use exit/quit or EOF to leave the session.
@@ -558,7 +565,7 @@ pub fn print_session_help_styled(effective: InteractiveExecutionMode) {
     println!(
         "  {}",
         Style::new().dim().apply_to(
-            "Config: CLAI_INTERACTIVE__EXECUTION, CLAI_INTERACTIVE__LOCAL_WARMUP · Global: --interactive-mode, --yes, --cloud"
+            "Config: CLAI_INTERACTIVE__EXECUTION, CLAI_INTERACTIVE__LOCAL_WARMUP, CLAI_INTERACTIVE__HISTORY_MAX_ENTRIES · Global: --interactive-mode, --yes, --cloud"
         ),
     );
     println!();
