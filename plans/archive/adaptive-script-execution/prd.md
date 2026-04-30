@@ -2,7 +2,7 @@
 
 ## 1. Executive Summary
 
-**Problem statement:** `clai` always asks the model to emit a single JSON [`CommandProposal`](../../src/schema.rs) (argv + optional `cwd`). The system prompt today exposes only broad host facts (OS, arch, cwd, shell family, path separator) via [`build_system_prompt`](../../src/main.rs). For tasks that are clearer, shorter, and faster as a small program (Python, Node, Ruby, etc.), a one-shot shell pipeline or long `sh -c` string is often worse: harder to read, more error-prone, and a poor fit for the model. Users also get no first-class signal about which interpreters are actually on `PATH`, so the model may guess wrong or pick heavier approaches than necessary.
+**Problem statement:** `clai` always asks the model to emit a single JSON [`CommandProposal`](../../../src/schema.rs) (argv + optional `cwd`). The system prompt today exposes only broad host facts (OS, arch, cwd, shell family, path separator) via [`build_system_prompt`](../../../src/main.rs). For tasks that are clearer, shorter, and faster as a small program (Python, Node, Ruby, etc.), a one-shot shell pipeline or long `sh -c` string is often worse: harder to read, more error-prone, and a poor fit for the model. Users also get no first-class signal about which interpreters are actually on `PATH`, so the model may guess wrong or pick heavier approaches than necessary.
 
 **Proposed solution:** Enrich the context passed to the model with **structured detection of common host tooling** (e.g. whether `python3`, `node`, `ruby`—and similar—resolve on the host, without requiring a full system inventory). Complement that with **clear instructions** so capable models prefer a **short script** (or `interpreter -c` / file invocation) when it fits the user request better than a fragile shell command. When a multi-line script must live on disk, the **runtime** must create it under a **managed temporary contract**, run the proposed argv, and **clean up** those artifacts in all exit paths (success, failure, timeout, user abort).
 
@@ -34,8 +34,8 @@
 
 ### Constraints
 
-- **C-1:** Primary codebase is **Rust** (`clai`); changes must align with [Cargo.toml](../../Cargo.toml) and existing modules (`host_context`, `session`, `policy`, `executor`, schema/prompt build path).
-- **C-2:** **CI** today runs `cargo fmt --check`, `cargo test --no-default-features --locked`, `cargo clippy` with warnings denied, and full-feature `cargo build` (see [.github/workflows/ci.yml](../../.github/workflows/ci.yml)); all must remain green.
+- **C-1:** Primary codebase is **Rust** (`clai`); changes must align with [Cargo.toml](../../../Cargo.toml) and existing modules (`host_context`, `session`, `policy`, `executor`, schema/prompt build path).
+- **C-2:** **CI** today runs `cargo fmt --check`, `cargo test --no-default-features --locked`, `cargo clippy` with warnings denied, and full-feature `cargo build` (see [.github/workflows/ci.yml](../../../.github/workflows/ci.yml)); all must remain green.
 - **C-3:** **Policy** allowlists and strict mode must remain meaningful; users who rely on strict allowlists must not get silent execution of unapproved binaries.
 - **C-4:** **Cross-platform** behavior must be explicit: Unix and Windows may differ in which tools are probed and how temp paths are handled (see §9).
 
@@ -123,7 +123,7 @@ Split the problem into **(A) observability of the host** and **(B) contract for 
 
 | Decision | Context | Options considered | Rationale | Trade-offs |
 |----------|---------|--------------------|-----------|------------|
-| D-1: Where tool info lives | Today [`HostContext`](../../src/host_context.rs) holds shell and OS | Extend `HostContext` vs new `RuntimeTooling` struct | A dedicated struct keeps JSON stable and testable; `HostContext::to_prompt_json` may merge or embed | Slightly more types to maintain |
+| D-1: Where tool info lives | Today [`HostContext`](../../../src/host_context.rs) holds shell and OS | Extend `HostContext` vs new `RuntimeTooling` struct | A dedicated struct keeps JSON stable and testable; `HostContext::to_prompt_json` may merge or embed | Slightly more types to maintain |
 | D-2: How the model provides script text | New JSON field vs `stdin` | Only argv today | New field or a side-channel is needed for file-backed scripts; `python -c` may avoid files | Schema migration + grammar updates vs simpler `-c` only in phase 1 |
 | D-3: Temp root | System temp vs clai data dir | Use OS temp with unique subdir per run; optional config override | OS temp is expected for short-lived; data dir for audit — optional | System temp may have OS-specific policies |
 | D-4: Model capability gating | Ignore vs “strong models only” | Config flag or prompt tier | Avoid misleading small local models; optional strictness | More config surface |
@@ -211,11 +211,11 @@ Split the problem into **(A) observability of the host** and **(B) contract for 
 
 ### Glossary
 
-- **Command proposal:** Structured JSON with `program`, `args`, optional `cwd`, `reason`, `needs_shell`, `confidence` — see [`src/schema.rs`](../../src/schema.rs).
+- **Command proposal:** Structured JSON with `program`, `args`, optional `cwd`, `reason`, `needs_shell`, `confidence` — see [`src/schema.rs`](../../../src/schema.rs).
 - **Managed temp contract:** Directory and naming convention owned by `clai` for Phase 2 script materialization, with guaranteed cleanup.
 - **Tool category:** e.g. Python, Node, Ruby — a probe target, not necessarily a full version matrix.
 
 ### Related artifacts
 
-- Archived plan: [plans/archive/native-shell-execution-ux/prd.md](../archive/native-shell-execution-ux/prd.md) (shell UX; different scope from script-first with argv).
-- Executor: [src/executor.rs](../../src/executor.rs)
+- Archived plan: [plans/archive/native-shell-execution-ux/prd.md](../native-shell-execution-ux/prd.md) (shell UX; different scope from script-first with argv).
+- Executor: [src/executor.rs](../../../src/executor.rs)
