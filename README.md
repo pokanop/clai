@@ -1,3 +1,39 @@
+# ⚠️ ARCHIVED — this project is no longer maintained
+
+**Archived 2026-07-12.** `clai` is retired and the repository is read-only.
+
+Natural-language → shell-command functionality has moved into the
+[`scripts`](https://github.com/pokanop/scripts) toolkit instead, where it is
+being rebuilt on top of [`scriptkit`](https://github.com/pokanop/scripts) and
+third-party inference layers (Ollama, cloud providers) rather than embedded
+local GGUF inference.
+
+### Rationale
+
+The core differentiator of `clai` was embedded, local-first GGUF inference via
+`llama-cpp-2`. That justified a standalone Rust project, but it also carried
+real cost:
+
+- Per-platform GPU-backend builds (Metal / CUDA / Vulkan) as Cargo features.
+- Heavy native dependencies (`llama-cpp-2`) that complicate distribution and CI.
+- A large surface area (sandboxing backends, self-update, plan/retro docs) for
+  a personal tool.
+
+Offloading inference to mature external layers — Ollama for local, provider
+APIs for cloud — eliminates the embedded-inference complexity while keeping the
+useful parts (NL → validated command → safe execution). A `scripts` tool built
+on the shared `scriptkit` CLI library is a cleaner home for that: one install
+path, shared config / subprocess / output / doctor tooling, and it slots in
+next to [`aikit`](https://github.com/pokanop/scripts/blob/main/docs/aikit.md),
+the agent manager.
+
+### If you want the original `clai`
+
+The full source history remains available in this repository. Build
+instructions in the sections below still apply to the last tagged release.
+
+---
+
 # clai
 
 Turn natural language into **shell commands**: local **GGUF** inference ([llama-cpp-2](https://crates.io/crates/llama-cpp-2)), **Hugging Face** downloads, a **safety policy** that runs *before* any `exec`, and an optional **OpenAI-compatible** API.
