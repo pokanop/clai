@@ -22,15 +22,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev
+      - name: Verify Rust toolchain
+        run: |
+          "$CARGO_HOME/bin/cargo" --version
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev
         if: runner.os == 'Linux'
-      - run: cargo fmt --check
-      - run: cargo test --no-default-features --locked
-      - run: cargo clippy --no-default-features --locked -- -D warnings
+      - run: |
+          "$CARGO_HOME/bin/cargo" fmt --check
+      - run: |
+          "$CARGO_HOME/bin/cargo" test --no-default-features --locked
+      - run: |
+          "$CARGO_HOME/bin/cargo" clippy --no-default-features --locked -- -D warnings
 
   build-full:
     runs-on: [self-hosted, macos, arm64]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --locked
+      - name: Verify Rust toolchain
+        run: |
+          "$CARGO_HOME/bin/cargo" --version
+      - name: Install CMake
+        run: command -v cmake >/dev/null || brew install cmake
+      - name: Verify CMake
+        run: cmake --version
+      - run: |
+          "$CARGO_HOME/bin/cargo" build --locked
