@@ -15,9 +15,9 @@ jobs:
       matrix:
         include:
           - os: linux
-            runner: [self-hosted, linux, x64]
+            runner: ubuntu-latest
           - os: macos
-            runner: [self-hosted, macos, arm64]
+            runner: macos-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
           "$CARGO_HOME/bin/cargo" clippy --no-default-features --locked -- -D warnings
 
   build-full:
-    runs-on: [self-hosted, macos, arm64]
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
